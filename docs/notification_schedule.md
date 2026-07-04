@@ -5,6 +5,7 @@ Use this guide when you want to run the notification worker commands on a fixed 
 The commands themselves are already available through `app.cli.notification_worker`, `app.cli.entrypoint`, Docker Compose, and the worker-specific environment modes.
 
 For Windows hosts, use `scripts/run_notification_job.ps1` to keep the job invocation consistent across Task Scheduler and ad hoc runs.
+If you want to generate or register the four recommended scheduled tasks together, use `scripts/register_notification_jobs.ps1`.
 
 ## Recommended Cadence
 
@@ -45,6 +46,16 @@ powershell -ExecutionPolicy Bypass -NoProfile -File .\scripts\run_notification_j
 
 # LINE webhook alerts
 powershell -ExecutionPolicy Bypass -NoProfile -File .\scripts\run_notification_job.ps1 -Job line-webhook-alerts -DeliverTo auto
+```
+
+## Example Task Registration
+
+```powershell
+# Preview the task definitions without changing the machine
+powershell -ExecutionPolicy Bypass -NoProfile -File .\scripts\register_notification_jobs.ps1
+
+# Create or replace the scheduled tasks on the local machine
+powershell -ExecutionPolicy Bypass -NoProfile -File .\scripts\register_notification_jobs.ps1 -Apply -Force
 ```
 
 ## Container Notes

@@ -23,6 +23,7 @@ O's flow V2 is the next production-oriented version of O's flow.
 - [docs/handoff.md](docs/handoff.md) records the current implementation state and the fastest safe continuation path for the next agent.
 - [docs/notification_schedule.md](docs/notification_schedule.md) gives the recommended cadence for notification worker jobs.
 - [scripts/run_notification_job.ps1](scripts/run_notification_job.ps1) is the Windows-friendly launcher for notification worker jobs.
+- [scripts/register_notification_jobs.ps1](scripts/register_notification_jobs.ps1) previews or registers the recommended Windows scheduled tasks.
 
 ## Current Workspace Layout
 

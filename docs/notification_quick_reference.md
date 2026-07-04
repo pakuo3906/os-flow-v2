@@ -5,6 +5,7 @@ Use this page when you want the shortest path to the notification worker and rep
 For broader project context, read `README.md` first; for implementation notes and project history, see `docs/handoff.md`.
 For recommended cadences and cron examples, see `docs/notification_schedule.md`.
 For Windows Task Scheduler runs, use `powershell -ExecutionPolicy Bypass -NoProfile -File scripts/run_notification_job.ps1`.
+For the four recommended task definitions, preview or register `powershell -ExecutionPolicy Bypass -NoProfile -File scripts/register_notification_jobs.ps1`.
 
 ## Commands
 

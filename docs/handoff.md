@@ -56,6 +56,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `docs/notification_quick_reference.md` provides a shorter operator-focused command reference.
 - `docs/notification_schedule.md` provides a recommended cadence and example cron entries for the worker jobs.
 - `scripts/run_notification_job.ps1` provides a Windows-friendly launcher that keeps Task Scheduler invocations consistent.
+- `scripts/register_notification_jobs.ps1` previews or registers the recommended Windows scheduled tasks in one place.
 - `docs/notification_quick_reference.md` also lists the HTTP report endpoints for JSON and Markdown output.
 - The trends endpoint supports `granularity=day|week|month`.
 - Delivery history filters include `deliver_to`, `status`, `created_after`, and `created_before`.
@@ -149,7 +150,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 
 ## Best Next Steps
 
-1. Schedule the `line-webhook-alerts` worker so LINE backlog monitoring runs automatically.
+1. Run `scripts/register_notification_jobs.ps1 -Apply -Force` on the target machine when you want the recommended Windows schedules to become active.
 2. Extend the LINE webhook bridge with richer event support for additional message event variants if they are needed operationally.
 3. Expand notification delivery history with retry policies, failure dashboards, or alerting hooks if operational volume increases.
 4. Implement the InsForge/PostgreSQL repository adapter and managed storage adapter behind the new runtime boundary.
