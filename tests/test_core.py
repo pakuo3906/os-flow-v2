@@ -461,6 +461,20 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual("case_updated", recent_body["operation_logs"][0]["event_type"])
                     self.assertEqual("auto", recent_body["notification_deliveries"][0]["deliver_to"])
 
+                    admin_activity = client.get("/admin/activity", params={"limit": 10})
+                    self.assertEqual(200, admin_activity.status_code)
+                    activity_body = admin_activity.json()
+                    self.assertEqual(10, activity_body["limit"])
+                    self.assertGreaterEqual(len(activity_body["items"]), 4)
+                    self.assertIn("case", {item["kind"] for item in activity_body["items"]})
+                    self.assertIn("document", {item["kind"] for item in activity_body["items"]})
+                    self.assertIn("operation_log", {item["kind"] for item in activity_body["items"]})
+                    self.assertIn("notification_delivery", {item["kind"] for item in activity_body["items"]})
+                    self.assertIn(
+                        "Admin recent notification delivery.",
+                        {item["summary"] for item in activity_body["items"]},
+                    )
+
                     cases_page_one = client.get("/cases/search", params={"limit": 1})
                     self.assertEqual(200, cases_page_one.status_code)
                     self.assertEqual("2", cases_page_one.headers.get("X-Total-Count"))

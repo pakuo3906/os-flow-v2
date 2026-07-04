@@ -126,6 +126,110 @@ def _parse_metadata_json(raw_value: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _build_admin_activity_item(
+    *,
+    kind: str,
+    entity_id: int,
+    occurred_at: str,
+    title: str,
+    summary: str,
+    resource_uri: str,
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "entity_id": entity_id,
+        "occurred_at": occurred_at,
+        "title": title,
+        "summary": summary,
+        "resource_uri": resource_uri,
+        "details": details,
+    }
+
+
+def _build_admin_activity_items(repository, *, limit: int) -> list[dict[str, Any]]:  # noqa: ANN001
+    source_limit = max(limit, 20)
+    items: list[dict[str, Any]] = []
+
+    for case in repository.search_cases(limit=source_limit):
+        items.append(
+            _build_admin_activity_item(
+                kind="case",
+                entity_id=case.id,
+                occurred_at=case.updated_at,
+                title=case.case_code,
+                summary=case.title,
+                resource_uri=f"oflow://cases/{case.id}",
+                details={
+                    "case_code": case.case_code,
+                    "status": case.status,
+                    "invoice_status": case.invoice_status,
+                    "output_status": case.output_status,
+                    "due_date": case.due_date,
+                },
+            )
+        )
+
+    for document in repository.list_documents(limit=source_limit):
+        items.append(
+            _build_admin_activity_item(
+                kind="document",
+                entity_id=document.id,
+                occurred_at=document.updated_at,
+                title=document.filename,
+                summary=document.source_type,
+                resource_uri=f"oflow://documents/{document.id}",
+                details={
+                    "case_id": document.case_id,
+                    "source_type": document.source_type,
+                    "mime_type": document.mime_type,
+                    "is_deleted": document.is_deleted,
+                    "version": document.version,
+                },
+            )
+        )
+
+    for log in repository.list_operation_logs(limit=source_limit):
+        items.append(
+            _build_admin_activity_item(
+                kind="operation_log",
+                entity_id=log.id,
+                occurred_at=log.created_at,
+                title=log.event_type,
+                summary=log.message,
+                resource_uri="oflow://summary",
+                details={
+                    "entity_type": log.entity_type,
+                    "case_id": log.case_id,
+                    "document_id": log.document_id,
+                    "metadata_json": _parse_optional_json(log.metadata_json, field_name="metadata_json", default={}),
+                },
+            )
+        )
+
+    for delivery in repository.list_notification_deliveries(limit=source_limit):
+        items.append(
+            _build_admin_activity_item(
+                kind="notification_delivery",
+                entity_id=delivery.id,
+                occurred_at=delivery.created_at,
+                title=delivery.deliver_to,
+                summary=delivery.message,
+                resource_uri=f"oflow://notification-deliveries/{delivery.id}",
+                details={
+                    "destination": delivery.destination,
+                    "status": delivery.status,
+                    "delivered_count": delivery.delivered_count,
+                    "digest_as_of": delivery.digest_as_of,
+                    "due_lookahead_days": delivery.due_lookahead_days,
+                    "invoice_lookahead_days": delivery.invoice_lookahead_days,
+                },
+            )
+        )
+
+    return sorted(items, key=lambda item: (item["occurred_at"], item["entity_id"]), reverse=True)[:limit]
+
+
 def _ingest_payload(
     ingestion_service: IngestionService,
     *,
@@ -646,6 +750,15 @@ def create_app() -> FastAPI:
             "documents": _serialize(repository.list_documents(limit=normalized_limit)),
             "operation_logs": _serialize(repository.list_operation_logs(limit=normalized_limit)),
             "notification_deliveries": _serialize(repository.list_notification_deliveries(limit=normalized_limit)),
+        }
+
+    @app.get("/admin/activity")
+    def admin_activity(limit: int = 20) -> dict[str, object]:
+        repository = current_repository()
+        normalized_limit = max(1, min(limit, 50))
+        return {
+            "limit": normalized_limit,
+            "items": _build_admin_activity_items(repository, limit=normalized_limit),
         }
 
     @app.get("/notifications/due")
