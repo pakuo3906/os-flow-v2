@@ -94,6 +94,18 @@ class LineWebhookClient:
             filename = f"line-{event_type}.json"
             source_path = f"line/event/{event_type}/{event.get('webhookEventId') or event_type}"
             title = f"LINE {event_type} event"
+            extra_metadata = {
+                "webhook_event_id": event.get("webhookEventId"),
+                "event_type": event_type,
+                "event_summary": summary,
+                "source_type": source.get("type"),
+                "event_json": event,
+            }
+            if event_type == "unsend":
+                unsend = event.get("unsend") or {}
+                unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
+                if unsend_message_id:
+                    extra_metadata["unsend_message_id"] = unsend_message_id
             structured_json = build_chat_metadata_json(
                 platform="line",
                 source_path=source_path,
@@ -101,13 +113,7 @@ class LineWebhookClient:
                 channel_id=str(source.get("groupId") or source.get("roomId") or ""),
                 author_name=str(source.get("userId") or ""),
                 message_text=None,
-                extra={
-                    "webhook_event_id": event.get("webhookEventId"),
-                    "event_type": event_type,
-                    "event_summary": summary,
-                    "source_type": source.get("type"),
-                    "event_json": event,
-                },
+                extra=extra_metadata,
             )
             result = ingest_chat_payload(
                 self.ingestion_service,
@@ -323,4 +329,9 @@ class LineWebhookClient:
             summary += f" from {source_type or 'unknown'}"
             if source_id:
                 summary += f" {source_id}"
+        if event_type == "unsend":
+            unsend = event.get("unsend") or {}
+            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
+            if unsend_message_id:
+                summary += f" for message {unsend_message_id}"
         return summary

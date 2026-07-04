@@ -454,7 +454,25 @@ def create_app() -> FastAPI:
             summary += f" from {source_type or 'unknown'}"
             if source_id:
                 summary += f" {source_id}"
+        if event_type == "unsend":
+            unsend = event_json.get("unsend") or {}
+            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
+            if unsend_message_id:
+                summary += f" for message {unsend_message_id}"
         return summary
+
+    def _line_event_extra_metadata(item: Any) -> dict[str, Any]:
+        event_json = getattr(item, "event_json", None)
+        if not isinstance(event_json, dict):
+            return {}
+        event_type = str(event_json.get("type") or "unknown")
+        extra_metadata: dict[str, Any] = {}
+        if event_type == "unsend":
+            unsend = event_json.get("unsend") or {}
+            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
+            if unsend_message_id:
+                extra_metadata["unsend_message_id"] = unsend_message_id
+        return extra_metadata
 
     def _line_webhook_event_types() -> tuple[str, ...]:
         return (
@@ -1687,6 +1705,7 @@ def create_app() -> FastAPI:
                         "message_type": _line_message_type(item),
                         "event_summary": _line_event_summary(item),
                         "event_json": item.event_json,
+                        **_line_event_extra_metadata(item),
                     },
                 )
                 continue
@@ -1702,6 +1721,7 @@ def create_app() -> FastAPI:
                     "event_summary": _line_event_summary(item),
                     "status": item.status,
                     "event_json": item.event_json,
+                    **_line_event_extra_metadata(item),
                 },
             )
             notify_mcp_resource_changed(

@@ -117,6 +117,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - LINE memberJoined and memberLeft events are also stored as JSON snapshots with readable summaries.
 - LINE postback and beacon events are also stored as JSON snapshots so interaction events are preserved too.
 - LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries.
+- LINE unsend events are also stored as JSON snapshots with the removed message ID preserved in metadata when present.
 - Pending LINE retries and non-message snapshots now keep searchable operation-log metadata as well.
 - LINE webhook accept / skip / signature-failure outcomes are now recorded in the operation log.
 - Pending LINE video/audio logs now keep the original event JSON so they can be replayed through the retry endpoint later.
@@ -136,7 +137,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
 - An optional OCR/image extraction entry point now exists, but a production-grade OCR backend, tuning, and PDF OCR are still future work.
 - The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, but a cleaner DB/session boundary should be added later.
-- The full local test suite is currently passing (99 tests).
+- The full local test suite is currently passing (101 tests).
 
 ## Verified Commands
 

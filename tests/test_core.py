@@ -1488,6 +1488,86 @@ class ApiTests(unittest.TestCase):
             finally:
                 app.state.repository.close()
 
+    def test_api_can_ingest_line_unsend_event_into_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            line_secret = "line-secret"
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                line_channel_secret=line_secret,
+                line_inbox_case_code="LINE-INBOX",
+            )
+
+            app = create_app()
+            app.state.repository.close()
+            app.state.repository = SQLiteRepository(settings.database_path)
+            app.state.storage = LocalFileStorageAdapter(settings.storage_root)
+            app.state.ingestion_service = IngestionService(settings, app.state.repository, app.state.storage)
+            app.state.line_webhook_client.settings = settings
+            app.state.line_webhook_client.ingestion_service = app.state.ingestion_service
+
+            payload = {
+                "destination": "U1234567890",
+                "events": [
+                    {
+                        "type": "unsend",
+                        "webhookEventId": "01HZZ-UNSEND",
+                        "source": {"type": "user", "userId": "U-line-user-14"},
+                        "unsend": {
+                            "messageId": "message-removed-1",
+                        },
+                    }
+                ],
+            }
+            raw_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            signature = base64.b64encode(
+                hmac.new(line_secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
+            ).decode("ascii")
+
+            try:
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/connectors/line/webhook",
+                        content=raw_body,
+                        headers={
+                            "X-Line-Signature": signature,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    self.assertEqual(200, response.status_code)
+                    body = response.json()
+                    self.assertEqual(1, body["processed_count"])
+                    self.assertEqual(1, body["ingested_count"])
+                    self.assertEqual(0, body["pending_count"])
+                    self.assertEqual(0, body["skipped_count"])
+                    self.assertEqual("unsend", body["items"][0]["event_type"])
+                    self.assertEqual("LINE-INBOX", body["items"][0]["case_code"])
+
+                    documents = app.state.repository.list_documents(source_type="line")
+                    self.assertEqual(1, len(documents))
+                    self.assertEqual("line-unsend.json", documents[0].filename)
+                    self.assertEqual("line/event/unsend/01HZZ-UNSEND", documents[0].source_path)
+
+                    logs = app.state.repository.list_operation_logs(event_type="line_webhook_ingested")
+                    self.assertEqual(1, len(logs))
+                    metadata = json.loads(logs[0].metadata_json)
+                    self.assertEqual("unsend", metadata["event_type"])
+                    self.assertEqual("message-removed-1", metadata["unsend_message_id"])
+                    self.assertIn("message message-removed-1", metadata["event_summary"])
+            finally:
+                app.state.repository.close()
+
     def test_api_rejects_invalid_line_webhook_signature_with_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
