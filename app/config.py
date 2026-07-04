@@ -23,9 +23,14 @@ class Settings:
     ai_base_url: str
     repository_backend: str = "sqlite"
     storage_backend: str = "local"
+    insforge_base_url: str | None = None
+    insforge_api_key: str | None = None
     insforge_database_url: str | None = None
     insforge_project_id: str | None = None
+    insforge_storage_bucket: str | None = None
     insforge_storage_namespace: str | None = None
+    insforge_auth_jwks_url: str | None = None
+    insforge_mcp_base_url: str | None = None
     notification_webhook_url: str | None = None
     notification_webhook_username: str | None = None
     notification_webhook_avatar_url: str | None = None
@@ -100,9 +105,14 @@ def load_settings() -> Settings:
         ai_base_url=os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
         repository_backend=os.getenv("REPOSITORY_BACKEND", "sqlite").strip() or "sqlite",
         storage_backend=os.getenv("STORAGE_BACKEND", "local").strip() or "local",
+        insforge_base_url=os.getenv("INSFORGE_BASE_URL", "").strip() or None,
+        insforge_api_key=os.getenv("INSFORGE_API_KEY", "").strip() or None,
         insforge_database_url=os.getenv("INSFORGE_DATABASE_URL", "").strip() or None,
         insforge_project_id=os.getenv("INSFORGE_PROJECT_ID", "").strip() or None,
+        insforge_storage_bucket=os.getenv("INSFORGE_STORAGE_BUCKET", "").strip() or None,
         insforge_storage_namespace=os.getenv("INSFORGE_STORAGE_NAMESPACE", "").strip() or None,
+        insforge_auth_jwks_url=os.getenv("INSFORGE_AUTH_JWKS_URL", "").strip() or None,
+        insforge_mcp_base_url=os.getenv("INSFORGE_MCP_BASE_URL", "").strip() or None,
         notification_webhook_url=os.getenv("NOTIFICATION_WEBHOOK_URL", "").strip() or None,
         notification_webhook_username=os.getenv("NOTIFICATION_WEBHOOK_USERNAME", "").strip() or None,
         notification_webhook_avatar_url=os.getenv("NOTIFICATION_WEBHOOK_AVATAR_URL", "").strip() or None,

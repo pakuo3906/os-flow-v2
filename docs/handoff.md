@@ -10,6 +10,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 
 - `app/config.py` loads settings from environment variables.
 - `app/runtime.py` centralizes repository/storage adapter creation and currently defaults to SQLite/local backends.
+- `app/config.py` now exposes explicit InsForge placeholder settings from `.env.example`.
 - `app/repositories/insforge.py` and `app/storage/insforge.py` now exist as explicit placeholders for the future managed backend.
 - `app/domain/models.py` defines the core ledger entities.
 - `app/repositories/sqlite.py` provides a SQLite-backed repository with schema initialization.
@@ -138,7 +139,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
 - An optional OCR/image extraction entry point now exists, but a production-grade OCR backend, tuning, and PDF OCR are still future work.
 - The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, but a cleaner DB/session boundary should be added later.
-- The full local test suite is currently passing (101 tests).
+- The full local test suite is currently passing (102 tests).
 
 ## Verified Commands
 
