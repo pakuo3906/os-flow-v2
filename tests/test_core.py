@@ -475,6 +475,26 @@ class ApiTests(unittest.TestCase):
                         {item["summary"] for item in activity_body["items"]},
                     )
 
+                    case_activity = client.get("/admin/activity", params={"kind": "case", "case_id": case_two.id})
+                    self.assertEqual(200, case_activity.status_code)
+                    case_activity_body = case_activity.json()
+                    self.assertEqual(20, case_activity_body["limit"])
+                    self.assertGreaterEqual(len(case_activity_body["items"]), 1)
+                    self.assertTrue(all(item["kind"] == "case" for item in case_activity_body["items"]))
+                    self.assertTrue(all(item["entity_id"] == case_two.id for item in case_activity_body["items"]))
+
+                    document_activity = client.get(
+                        "/admin/activity",
+                        params={"kind": "document", "document_id": document_two.id},
+                    )
+                    self.assertEqual(200, document_activity.status_code)
+                    document_activity_body = document_activity.json()
+                    self.assertGreaterEqual(len(document_activity_body["items"]), 1)
+                    self.assertTrue(all(item["kind"] == "document" for item in document_activity_body["items"]))
+                    self.assertTrue(
+                        all(item["entity_id"] == document_two.id for item in document_activity_body["items"])
+                    )
+
                     cases_page_one = client.get("/cases/search", params={"limit": 1})
                     self.assertEqual(200, cases_page_one.status_code)
                     self.assertEqual("2", cases_page_one.headers.get("X-Total-Count"))

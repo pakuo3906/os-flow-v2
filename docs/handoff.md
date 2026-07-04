@@ -34,7 +34,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `app/api/main.py` exposes `/admin/overview` as a lightweight admin-facing snapshot with backend configuration flags and system counts.
 - `app/api/main.py` also returns status breakdowns for cases, invoices, outputs, and document source types from `/admin/overview`.
 - The dashboard summary now includes per-event-type, per-resource, and top-resource counts.
-- `app/api/main.py` exposes `/admin/recent` for quick latest-item inspection and `/admin/activity` for a merged admin timeline.
+- `app/api/main.py` exposes `/admin/recent` for quick latest-item inspection and `/admin/activity` for a merged admin timeline with kind/case/document filters.
 - `app/mcp/http.py` now drains queued subscription-change events through `GET /mcp` as SSE lines before the keep-alive comment.
 - `app/api/main.py` now queues case, document, and ingestion resource-change notifications into the MCP transport after successful mutations.
 - `app/mcp/server.py` now records MCP usage events into the operation log for initialize, tools, resources, prompts, and unknown methods.
@@ -168,7 +168,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `docs/notification_quick_reference.md` is the shortest operator-facing notification runbook.
 - `GET /admin/overview` is the current best low-friction starting point for a React-admin style UI.
 - `GET /admin/recent` is the current best quick-look endpoint for operator timelines and latest activity.
-- `GET /admin/activity` is the current best merged timeline endpoint for admin-style dashboards.
+- `GET /admin/activity` is the current best merged timeline endpoint for admin-style dashboards, and it now accepts kind/case/document filters.
 
 ## Working Rule For Future Changes
 

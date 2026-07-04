@@ -230,6 +230,33 @@ def _build_admin_activity_items(repository, *, limit: int) -> list[dict[str, Any
     return sorted(items, key=lambda item: (item["occurred_at"], item["entity_id"]), reverse=True)[:limit]
 
 
+def _filter_admin_activity_items(
+    items: list[dict[str, Any]],
+    *,
+    kind: str | None = None,
+    case_id: int | None = None,
+    document_id: int | None = None,
+) -> list[dict[str, Any]]:
+    filtered = items
+    if kind:
+        filtered = [item for item in filtered if item.get("kind") == kind]
+    if case_id is not None:
+        filtered = [
+            item
+            for item in filtered
+            if item.get("entity_id") == case_id
+            or item.get("details", {}).get("case_id") == case_id
+        ]
+    if document_id is not None:
+        filtered = [
+            item
+            for item in filtered
+            if item.get("entity_id") == document_id
+            or item.get("details", {}).get("document_id") == document_id
+        ]
+    return filtered
+
+
 def _ingest_payload(
     ingestion_service: IngestionService,
     *,
@@ -753,12 +780,24 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/admin/activity")
-    def admin_activity(limit: int = 20) -> dict[str, object]:
+    def admin_activity(
+        limit: int = 20,
+        kind: str | None = None,
+        case_id: int | None = None,
+        document_id: int | None = None,
+    ) -> dict[str, object]:
         repository = current_repository()
         normalized_limit = max(1, min(limit, 50))
+        items = _build_admin_activity_items(repository, limit=max(normalized_limit, 20))
+        filtered_items = _filter_admin_activity_items(
+            items,
+            kind=kind,
+            case_id=case_id,
+            document_id=document_id,
+        )
         return {
             "limit": normalized_limit,
-            "items": _build_admin_activity_items(repository, limit=normalized_limit),
+            "items": filtered_items[:normalized_limit],
         }
 
     @app.get("/notifications/due")
