@@ -596,6 +596,36 @@ def create_app() -> FastAPI:
             "rag_entries_total": repository.count_rag(query=""),
         }
 
+    @app.get("/admin/overview")
+    def admin_overview() -> dict[str, object]:
+        repository = current_repository()
+        return {
+            "settings": {
+                "app_env": settings.app_env,
+                "repository_backend": settings.repository_backend,
+                "storage_backend": settings.storage_backend,
+                "insforge": {
+                    "base_url_configured": bool((settings.insforge_base_url or "").strip()),
+                    "api_key_configured": bool((settings.insforge_api_key or "").strip()),
+                    "database_url_configured": bool((settings.insforge_database_url or "").strip()),
+                    "project_id_configured": bool((settings.insforge_project_id or "").strip()),
+                    "storage_bucket_configured": bool((settings.insforge_storage_bucket or "").strip()),
+                    "storage_namespace_configured": bool((settings.insforge_storage_namespace or "").strip()),
+                    "auth_jwks_url_configured": bool((settings.insforge_auth_jwks_url or "").strip()),
+                    "mcp_base_url_configured": bool((settings.insforge_mcp_base_url or "").strip()),
+                },
+            },
+            "summary": {
+                "cases_total": repository.count_cases(),
+                "documents_total": repository.count_documents(),
+                "documents_active": repository.count_documents(is_deleted=False),
+                "processing_jobs_total": repository.count_processing_jobs(),
+                "operation_logs_total": repository.count_operation_logs(),
+                "notification_deliveries_total": repository.count_notification_deliveries(),
+                "rag_entries_total": repository.count_rag(query=""),
+            },
+        }
+
     @app.get("/notifications/due")
     def preview_notifications(
         as_of: str | None = None,

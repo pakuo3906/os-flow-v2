@@ -5,6 +5,7 @@ import hashlib
 import io
 import hmac
 import json
+import os
 import tempfile
 import unittest
 import warnings
@@ -416,6 +417,15 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(2, summary_response.json()["processing_jobs_total"])
                     self.assertEqual(0, summary_response.json()["operation_logs_total"])
                     self.assertEqual(2, summary_response.json()["rag_entries_total"])
+
+                    admin_overview = client.get("/admin/overview")
+                    self.assertEqual(200, admin_overview.status_code)
+                    self.assertEqual("development", admin_overview.json()["settings"]["app_env"])
+                    self.assertEqual("sqlite", admin_overview.json()["settings"]["repository_backend"])
+                    self.assertEqual("local", admin_overview.json()["settings"]["storage_backend"])
+                    self.assertFalse(admin_overview.json()["settings"]["insforge"]["base_url_configured"])
+                    self.assertEqual(2, admin_overview.json()["summary"]["cases_total"])
+                    self.assertEqual(2, admin_overview.json()["summary"]["documents_total"])
 
                     cases_page_one = client.get("/cases/search", params={"limit": 1})
                     self.assertEqual(200, cases_page_one.status_code)
@@ -2758,6 +2768,61 @@ class ApiTests(unittest.TestCase):
                         "document_reassigned",
                         {item["event_type"] for item in document_activity.json()},
                     )
+            finally:
+                app.state.repository.close()
+
+
+    def test_api_reports_admin_overview_with_insforge_placeholder_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                "APP_ENV": "test",
+                "DATABASE_PATH": str(root / "data" / "app.db"),
+                "STORAGE_ROOT": str(root / "storage"),
+                "OUTPUT_ROOT": str(root / "output"),
+                "TEMP_ROOT": str(root / "temp"),
+                "RAG_ROOT": str(root / "storage" / "rag"),
+                "DISCORD_BOT_TOKEN": "",
+                "DISCORD_TARGET_CHANNEL_IDS": "123",
+                "AI_PROVIDER": "openai_compatible",
+                "AI_API_KEY": "",
+                "AI_MODEL": "gpt-4.1",
+                "AI_BASE_URL": "https://api.openai.com/v1",
+                "INSFORGE_BASE_URL": "https://example.insforge.invalid",
+                "INSFORGE_API_KEY": "insforge-key",
+                "INSFORGE_DATABASE_URL": "postgresql://example",
+                "INSFORGE_PROJECT_ID": "project-123",
+                "INSFORGE_STORAGE_BUCKET": "bucket-1",
+                "INSFORGE_STORAGE_NAMESPACE": "namespace-1",
+                "INSFORGE_AUTH_JWKS_URL": "https://example.insforge.invalid/.well-known/jwks.json",
+                "INSFORGE_MCP_BASE_URL": "https://example.insforge.invalid/mcp",
+            }
+
+            with patch("app.config.load_dotenv", autospec=True, return_value=None):
+                with patch.dict(os.environ, env, clear=True):
+                    app = create_app()
+
+            app.state.repository.close()
+            app.state.repository = SQLiteRepository(Path(env["DATABASE_PATH"]))
+
+            try:
+                with TestClient(app) as client:
+                    response = client.get("/admin/overview")
+                    self.assertEqual(200, response.status_code)
+                    body = response.json()
+                    self.assertEqual("test", body["settings"]["app_env"])
+                    self.assertEqual("sqlite", body["settings"]["repository_backend"])
+                    self.assertEqual("local", body["settings"]["storage_backend"])
+                    self.assertTrue(body["settings"]["insforge"]["base_url_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["api_key_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["database_url_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["project_id_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["storage_bucket_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["storage_namespace_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["auth_jwks_url_configured"])
+                    self.assertTrue(body["settings"]["insforge"]["mcp_base_url_configured"])
+                    self.assertEqual(0, body["summary"]["cases_total"])
+                    self.assertEqual(0, body["summary"]["documents_total"])
             finally:
                 app.state.repository.close()
 

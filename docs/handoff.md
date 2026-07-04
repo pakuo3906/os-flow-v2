@@ -31,6 +31,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `app/api/main.py` exposes `/mcp/events` so the queued MCP event snapshot can be inspected from the API surface, with `session_id`, `event_type`, and `resource_uri` filters plus per-type counts.
 - `app/api/main.py` exposes `/mcp/overview` so subscriptions and queued events can be inspected together from the API surface, including per-type counts.
 - `app/api/main.py` exposes `/mcp/dashboard` as the compact MCP operational summary endpoint.
+- `app/api/main.py` exposes `/admin/overview` as a lightweight admin-facing snapshot with backend configuration flags and system counts.
 - The dashboard summary now includes per-event-type, per-resource, and top-resource counts.
 - `app/mcp/http.py` now drains queued subscription-change events through `GET /mcp` as SSE lines before the keep-alive comment.
 - `app/api/main.py` now queues case, document, and ingestion resource-change notifications into the MCP transport after successful mutations.
@@ -139,7 +140,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
 - An optional OCR/image extraction entry point now exists, but a production-grade OCR backend, tuning, and PDF OCR are still future work.
 - The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, but a cleaner DB/session boundary should be added later.
-- The full local test suite is currently passing (102 tests).
+- The full local test suite is currently passing (103 tests).
 
 ## Verified Commands
 
@@ -163,6 +164,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `README.md` is the top-level project overview.
 - `docs/implementation_directive.md` is the fixed direction future AI agents should read first.
 - `docs/notification_quick_reference.md` is the shortest operator-facing notification runbook.
+- `GET /admin/overview` is the current best low-friction starting point for a React-admin style UI.
 
 ## Working Rule For Future Changes
 
