@@ -64,6 +64,8 @@ O's flow V2 is the next production-oriented version of O's flow.
 - Case, document, and ingestion mutations now queue resource-change notifications for subscribed MCP sessions.
 - MCP requests are recorded into the operation log for audit visibility.
 - `GET /admin/overview` exposes a lightweight admin-facing snapshot with backend configuration flags and system counts.
+- `GET /admin/overview` also includes status breakdowns for cases, invoices, outputs, and document source types.
+- `GET /admin/recent` exposes the latest cases, documents, operation logs, and notification deliveries for quick operator inspection.
 - Ingestion service scaffold is in place.
 - Processing job ledger and API visibility are in place.
 - Dockerfile is in place for containerized API startup.

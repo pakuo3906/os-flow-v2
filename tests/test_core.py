@@ -359,10 +359,10 @@ class ApiTests(unittest.TestCase):
                     case_code="CASE-API-2",
                     title="API supporting case",
                     client_name="Client API 2",
-                    status="in_progress",
+                    status="new",
                     due_date="2026-07-25",
                     invoice_status="pending",
-                    output_status="pending",
+                    output_status="completed",
                 )
                 document_two = repo.register_document(
                     case_id=case_two.id,
@@ -399,6 +399,24 @@ class ApiTests(unittest.TestCase):
                     second_job.id,
                     finished_at="2026-07-03T01:30:00+00:00",
                 )
+                repo.record_operation_log(
+                    event_type="case_updated",
+                    entity_type="case",
+                    entity_id=case_two.id,
+                    case_id=case_two.id,
+                    message="Case updated for admin recent test.",
+                    metadata_json={"case_code": case_two.case_code},
+                )
+                repo.record_notification_delivery(
+                    deliver_to="auto",
+                    destination="discord://admin-recent",
+                    delivered_count=1,
+                    digest_as_of="2026-07-04",
+                    due_lookahead_days=1,
+                    invoice_lookahead_days=7,
+                    message="Admin recent notification delivery.",
+                    metadata_json={"case_code": case_two.case_code},
+                )
 
             app = create_app()
             app.state.repository.close()
@@ -415,7 +433,7 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(2, summary_response.json()["documents_total"])
                     self.assertEqual(2, summary_response.json()["documents_active"])
                     self.assertEqual(2, summary_response.json()["processing_jobs_total"])
-                    self.assertEqual(0, summary_response.json()["operation_logs_total"])
+                    self.assertEqual(1, summary_response.json()["operation_logs_total"])
                     self.assertEqual(2, summary_response.json()["rag_entries_total"])
 
                     admin_overview = client.get("/admin/overview")
@@ -426,6 +444,22 @@ class ApiTests(unittest.TestCase):
                     self.assertFalse(admin_overview.json()["settings"]["insforge"]["base_url_configured"])
                     self.assertEqual(2, admin_overview.json()["summary"]["cases_total"])
                     self.assertEqual(2, admin_overview.json()["summary"]["documents_total"])
+                    self.assertEqual(1, admin_overview.json()["breakdown"]["case_statuses"]["in_progress"])
+                    self.assertEqual(1, admin_overview.json()["breakdown"]["case_statuses"]["new"])
+                    self.assertEqual(2, admin_overview.json()["breakdown"]["invoice_statuses"]["pending"])
+                    self.assertEqual(0, admin_overview.json()["breakdown"]["invoice_statuses"]["unbilled"])
+                    self.assertEqual(1, admin_overview.json()["breakdown"]["output_statuses"]["pending"])
+                    self.assertEqual(1, admin_overview.json()["breakdown"]["output_statuses"]["completed"])
+                    self.assertEqual(2, admin_overview.json()["breakdown"]["document_source_types"]["discord"])
+
+                    admin_recent = client.get("/admin/recent", params={"limit": 1})
+                    self.assertEqual(200, admin_recent.status_code)
+                    recent_body = admin_recent.json()
+                    self.assertEqual(1, recent_body["limit"])
+                    self.assertEqual("CASE-API-2", recent_body["cases"][0]["case_code"])
+                    self.assertEqual("appendix.jpg", recent_body["documents"][0]["filename"])
+                    self.assertEqual("case_updated", recent_body["operation_logs"][0]["event_type"])
+                    self.assertEqual("auto", recent_body["notification_deliveries"][0]["deliver_to"])
 
                     cases_page_one = client.get("/cases/search", params={"limit": 1})
                     self.assertEqual(200, cases_page_one.status_code)
@@ -2823,6 +2857,10 @@ class ApiTests(unittest.TestCase):
                     self.assertTrue(body["settings"]["insforge"]["mcp_base_url_configured"])
                     self.assertEqual(0, body["summary"]["cases_total"])
                     self.assertEqual(0, body["summary"]["documents_total"])
+                    self.assertEqual(0, body["breakdown"]["case_statuses"]["new"])
+                    self.assertEqual(0, body["breakdown"]["invoice_statuses"]["pending"])
+                    self.assertEqual(0, body["breakdown"]["output_statuses"]["pending"])
+                    self.assertEqual(0, body["breakdown"]["document_source_types"]["line"])
             finally:
                 app.state.repository.close()
 

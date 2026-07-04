@@ -91,6 +91,8 @@ class Repository(Protocol):
         query: str = "",
         status: str | None = None,
         due_before: str | None = None,
+        invoice_status: str | None = None,
+        output_status: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> list[Case]:
@@ -101,6 +103,8 @@ class Repository(Protocol):
         query: str = "",
         status: str | None = None,
         due_before: str | None = None,
+        invoice_status: str | None = None,
+        output_status: str | None = None,
     ) -> int:
         ...
 

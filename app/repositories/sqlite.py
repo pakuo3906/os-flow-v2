@@ -316,6 +316,8 @@ class SQLiteRepository:
         query: str = "",
         status: str | None = None,
         due_before: str | None = None,
+        invoice_status: str | None = None,
+        output_status: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> list[Case]:
@@ -332,6 +334,12 @@ class SQLiteRepository:
         if due_before:
             clauses.append("due_date IS NOT NULL AND due_date <= ?")
             params.append(due_before)
+        if invoice_status:
+            clauses.append("invoice_status = ?")
+            params.append(invoice_status)
+        if output_status:
+            clauses.append("output_status = ?")
+            params.append(output_status)
         sql = "SELECT * FROM cases"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -345,6 +353,8 @@ class SQLiteRepository:
         query: str = "",
         status: str | None = None,
         due_before: str | None = None,
+        invoice_status: str | None = None,
+        output_status: str | None = None,
     ) -> int:
         clauses = []
         params: list[object] = []
@@ -358,6 +368,12 @@ class SQLiteRepository:
         if due_before:
             clauses.append("due_date IS NOT NULL AND due_date <= ?")
             params.append(due_before)
+        if invoice_status:
+            clauses.append("invoice_status = ?")
+            params.append(invoice_status)
+        if output_status:
+            clauses.append("output_status = ?")
+            params.append(output_status)
         sql = "SELECT COUNT(*) AS total FROM cases"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)

@@ -599,6 +599,10 @@ def create_app() -> FastAPI:
     @app.get("/admin/overview")
     def admin_overview() -> dict[str, object]:
         repository = current_repository()
+        case_statuses = ("new", "in_progress", "completed")
+        invoice_statuses = ("unbilled", "pending")
+        output_statuses = ("pending", "completed")
+        source_types = ("discord", "line", "api")
         return {
             "settings": {
                 "app_env": settings.app_env,
@@ -624,6 +628,24 @@ def create_app() -> FastAPI:
                 "notification_deliveries_total": repository.count_notification_deliveries(),
                 "rag_entries_total": repository.count_rag(query=""),
             },
+            "breakdown": {
+                "case_statuses": {status: repository.count_cases(status=status) for status in case_statuses},
+                "invoice_statuses": {status: repository.count_cases(invoice_status=status) for status in invoice_statuses},
+                "output_statuses": {status: repository.count_cases(output_status=status) for status in output_statuses},
+                "document_source_types": {source_type: repository.count_documents(source_type=source_type) for source_type in source_types},
+            },
+        }
+
+    @app.get("/admin/recent")
+    def admin_recent(limit: int = 10) -> dict[str, object]:
+        repository = current_repository()
+        normalized_limit = max(1, min(limit, 50))
+        return {
+            "limit": normalized_limit,
+            "cases": _serialize(repository.search_cases(limit=normalized_limit)),
+            "documents": _serialize(repository.list_documents(limit=normalized_limit)),
+            "operation_logs": _serialize(repository.list_operation_logs(limit=normalized_limit)),
+            "notification_deliveries": _serialize(repository.list_notification_deliveries(limit=normalized_limit)),
         }
 
     @app.get("/notifications/due")
