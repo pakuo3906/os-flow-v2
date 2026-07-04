@@ -1,0 +1,71 @@
+services:
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      APP_RUN_MODE: api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+      - ./output:/app/output
+      - ./temp:/app/temp
+
+  notification-worker:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      APP_RUN_MODE: notification-worker
+    command: ["python", "-m", "app.cli.notification_worker", "digest"]
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+      - ./output:/app/output
+      - ./temp:/app/temp
+
+  notification-report:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      APP_RUN_MODE: notification-report
+    command: ["python", "-m", "app.cli.notification_worker", "report"]
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+      - ./output:/app/output
+      - ./temp:/app/temp
+
+  notification-line-webhook-report:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      APP_RUN_MODE: notification-line-webhook-report
+    command: ["python", "-m", "app.cli.notification_worker", "line-webhook-report"]
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+      - ./output:/app/output
+      - ./temp:/app/temp
+
+  notification-line-webhook-alerts:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      APP_RUN_MODE: notification-line-webhook-alerts
+    command: ["python", "-m", "app.cli.notification_worker", "line-webhook-alerts"]
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+      - ./output:/app/output
+      - ./temp:/app/temp

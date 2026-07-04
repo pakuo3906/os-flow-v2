@@ -1,0 +1,14 @@
+.agents/
+discord-fill-bot/
+oz-flow-inspect/
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.sqlite3
+data/
+storage/
+output/
+temp/
