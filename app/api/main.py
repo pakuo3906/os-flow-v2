@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+from html import escape
 from datetime import date
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi import Request
 from pydantic import BaseModel, Field, field_validator
 
@@ -799,6 +800,370 @@ def create_app() -> FastAPI:
             "limit": normalized_limit,
             "items": filtered_items[:normalized_limit],
         }
+
+    @app.get("/admin/dashboard")
+    def admin_dashboard(
+        recent_limit: int = 5,
+        activity_limit: int = 20,
+        kind: str | None = None,
+        case_id: int | None = None,
+        document_id: int | None = None,
+        deliver_to: str | None = None,
+    ) -> dict[str, object]:
+        repository = current_repository()
+        normalized_recent_limit = max(1, min(recent_limit, 50))
+        normalized_activity_limit = max(1, min(activity_limit, 50))
+        return {
+            "overview": admin_overview(),
+            "recent": admin_recent(limit=normalized_recent_limit),
+            "activity": admin_activity(
+                limit=normalized_activity_limit,
+                kind=kind,
+                case_id=case_id,
+                document_id=document_id,
+            ),
+            "notifications": build_notification_delivery_summary(
+                repository,
+                deliver_to=deliver_to,
+                recent_failures_limit=normalized_recent_limit,
+            ),
+        }
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_page() -> str:
+        dashboard = admin_dashboard(recent_limit=3, activity_limit=5)
+        overview = dashboard["overview"]
+        recent = dashboard["recent"]
+        activity = dashboard["activity"]
+        notifications = dashboard["notifications"]
+
+        overview_summary = overview["summary"]
+        overview_settings = overview["settings"]
+        recent_cases = recent["cases"]
+        recent_documents = recent["documents"]
+        recent_logs = recent["operation_logs"]
+        recent_deliveries = recent["notification_deliveries"]
+        activity_items = activity["items"]
+
+        recent_cases_html = "".join(
+            f"<li><strong>{escape(item['case_code'])}</strong> - {escape(item['title'])}</li>"
+            for item in recent_cases
+        ) or "<li>No recent cases.</li>"
+        recent_documents_html = "".join(
+            f"<li><strong>{escape(item['filename'])}</strong> - {escape(item['source_type'])}</li>"
+            for item in recent_documents
+        ) or "<li>No recent documents.</li>"
+        recent_logs_html = "".join(
+            f"<li><strong>{escape(item['event_type'])}</strong> - {escape(item['message'])}</li>"
+            for item in recent_logs
+        ) or "<li>No recent operation logs.</li>"
+        recent_deliveries_html = "".join(
+            f"<li><strong>{escape(item['deliver_to'])}</strong> - {escape(item['status'])}</li>"
+            for item in recent_deliveries
+        ) or "<li>No recent notification deliveries.</li>"
+        activity_html = "".join(
+            f"<li><strong>{escape(item['kind'])}</strong> - {escape(item['title'])} - {escape(item['summary'])}</li>"
+            for item in activity_items
+        ) or "<li>No recent activity.</li>"
+
+        return f"""
+        <html>
+            <head>
+                <title>O's flow Admin</title>
+                <meta charset="utf-8" />
+            </head>
+            <body>
+                <main>
+                    <h1>O's flow Admin</h1>
+                    <p>Operational landing page for the admin surface.</p>
+                    <section>
+                        <h2>Quick Links</h2>
+                        <ul>
+                            <li><a href="/admin/overview">/admin/overview</a></li>
+                            <li><a href="/admin/recent">/admin/recent</a></li>
+                            <li><a href="/admin/activity">/admin/activity</a></li>
+                            <li><a href="/admin/dashboard">/admin/dashboard</a></li>
+                            <li><a href="/notification-deliveries/report">/notification-deliveries/report</a></li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h2>Snapshot</h2>
+                        <ul>
+                            <li>Environment: {escape(str(overview_settings["app_env"]))}</li>
+                            <li>Repository: {escape(str(overview_settings["repository_backend"]))}</li>
+                            <li>Storage: {escape(str(overview_settings["storage_backend"]))}</li>
+                            <li>Cases: {overview_summary["cases_total"]}</li>
+                            <li>Documents: {overview_summary["documents_total"]}</li>
+                            <li>Operation logs: {overview_summary["operation_logs_total"]}</li>
+                            <li>Notification deliveries: {overview_summary["notification_deliveries_total"]}</li>
+                            <li>Notification deliveries with attention: {notifications["needs_attention"]}</li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h2>Recent Cases</h2>
+                        <ul>{recent_cases_html}</ul>
+                    </section>
+                    <section>
+                        <h2>Recent Documents</h2>
+                        <ul>{recent_documents_html}</ul>
+                    </section>
+                    <section>
+                        <h2>Recent Operation Logs</h2>
+                        <ul>{recent_logs_html}</ul>
+                    </section>
+                    <section>
+                        <h2>Recent Notification Deliveries</h2>
+                        <ul>{recent_deliveries_html}</ul>
+                    </section>
+                    <section>
+                        <h2>Activity Timeline</h2>
+                        <ul>{activity_html}</ul>
+                    </section>
+                </main>
+            </body>
+        </html>
+        """
+
+    @app.get("/admin/resources")
+    def admin_resources() -> dict[str, object]:
+        return {
+            "resources": [
+                {
+                    "name": "cases",
+                    "title": "Cases",
+                    "collection_path": "/cases/search",
+                    "detail_path": "/cases/{case_id}",
+                    "activity_path": "/cases/{case_id}/activity",
+                    "filters": ["query", "status", "due_before", "invoice_status", "output_status"],
+                },
+                {
+                    "name": "documents",
+                    "title": "Documents",
+                    "collection_path": "/documents",
+                    "detail_path": "/documents/{document_id}",
+                    "activity_path": "/documents/{document_id}/activity",
+                    "filters": ["case_id", "source_type", "is_deleted", "query"],
+                },
+                {
+                    "name": "operation_logs",
+                    "title": "Operation Logs",
+                    "collection_path": "/operation-logs",
+                    "filters": ["case_id", "document_id", "event_type"],
+                },
+                {
+                    "name": "notification_deliveries",
+                    "title": "Notification Deliveries",
+                    "collection_path": "/notification-deliveries",
+                    "summary_path": "/notification-deliveries/summary",
+                    "trends_path": "/notification-deliveries/trends",
+                    "alerts_path": "/notification-deliveries/alerts",
+                    "report_path": "/notification-deliveries/report",
+                    "filters": ["deliver_to", "status", "created_after", "created_before"],
+                },
+                {
+                    "name": "admin",
+                    "title": "Admin Dashboard",
+                    "collection_path": "/admin/dashboard",
+                    "overview_path": "/admin/overview",
+                    "recent_path": "/admin/recent",
+                    "activity_path": "/admin/activity",
+                },
+            ]
+        }
+
+    @app.get("/admin/ui", response_class=HTMLResponse)
+    def admin_ui() -> str:
+        return """
+        <html>
+            <head>
+                <title>O's flow Admin UI</title>
+                <meta charset="utf-8" />
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #1f2937; }
+                    main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+                    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }
+                    h1, h2, h3 { margin: 0 0 12px; }
+                    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+                    .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08); }
+                    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+                    .toolbar input, .toolbar select, .toolbar button { padding: 10px 12px; border-radius: 8px; border: 1px solid #cbd5e1; }
+                    .toolbar button { background: #0f172a; color: white; border: 0; cursor: pointer; }
+                    .toolbar button.secondary { background: #e2e8f0; color: #0f172a; }
+                    ul { padding-left: 20px; margin: 0; }
+                    li { margin: 6px 0; }
+                    code { background: #eef2ff; padding: 2px 6px; border-radius: 6px; }
+                    .muted { color: #64748b; }
+                    .status-good { color: #166534; }
+                    .status-warn { color: #b45309; }
+                    .status-bad { color: #b91c1c; }
+                    pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; overflow-x: auto; }
+                </style>
+            </head>
+            <body>
+                <main>
+                    <header>
+                        <div>
+                            <h1>O's flow Admin UI</h1>
+                            <p class="muted">Lightweight operational view for the eventual React-admin surface.</p>
+                        </div>
+                        <div class="toolbar">
+                            <button id="refreshButton" type="button">Refresh</button>
+                            <button id="loadResourcesButton" type="button" class="secondary">Load resources</button>
+                        </div>
+                    </header>
+
+                    <section class="card">
+                        <h2>Filters</h2>
+                        <div class="toolbar">
+                            <select id="activityKind">
+                                <option value="">All kinds</option>
+                                <option value="case">case</option>
+                                <option value="document">document</option>
+                                <option value="operation_log">operation_log</option>
+                                <option value="notification_delivery">notification_delivery</option>
+                            </select>
+                            <input id="activityCaseId" type="number" min="1" placeholder="Case ID" />
+                            <input id="activityDocumentId" type="number" min="1" placeholder="Document ID" />
+                            <input id="activityDeliverTo" type="text" placeholder="Deliver to" />
+                        </div>
+                    </section>
+
+                    <div class="grid">
+                        <section class="card">
+                            <h2>Overview</h2>
+                            <div id="overviewContent" class="muted">Loading overview...</div>
+                        </section>
+                        <section class="card">
+                            <h2>Recent</h2>
+                            <div id="recentContent" class="muted">Loading recent items...</div>
+                        </section>
+                        <section class="card">
+                            <h2>Activity</h2>
+                            <div id="activityContent" class="muted">Loading activity...</div>
+                        </section>
+                        <section class="card">
+                            <h2>Notifications</h2>
+                            <div id="notificationContent" class="muted">Loading notification summary...</div>
+                        </section>
+                    </div>
+
+                    <section class="card" style="margin-top: 16px;">
+                        <h2>Resource Manifest</h2>
+                        <div id="resourceContent" class="muted">Loading resources...</div>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
+                        <h2>Raw Payload</h2>
+                        <pre id="rawContent">Loading raw payload...</pre>
+                    </section>
+                </main>
+                <script>
+                    const overviewContent = document.getElementById("overviewContent");
+                    const recentContent = document.getElementById("recentContent");
+                    const activityContent = document.getElementById("activityContent");
+                    const notificationContent = document.getElementById("notificationContent");
+                    const resourceContent = document.getElementById("resourceContent");
+                    const rawContent = document.getElementById("rawContent");
+
+                    function readFilters() {
+                        const params = new URLSearchParams();
+                        params.set("recent_limit", "5");
+                        params.set("activity_limit", "10");
+                        const kind = document.getElementById("activityKind").value.trim();
+                        const caseId = document.getElementById("activityCaseId").value.trim();
+                        const documentId = document.getElementById("activityDocumentId").value.trim();
+                        const deliverTo = document.getElementById("activityDeliverTo").value.trim();
+                        if (kind) params.set("kind", kind);
+                        if (caseId) params.set("case_id", caseId);
+                        if (documentId) params.set("document_id", documentId);
+                        if (deliverTo) params.set("deliver_to", deliverTo);
+                        return params;
+                    }
+
+                    function renderList(items, renderItem) {
+                        if (!items || !items.length) {
+                            return '<p class="muted">No items.</p>';
+                        }
+                        return '<ul>' + items.map(renderItem).join('') + '</ul>';
+                    }
+
+                    function renderOverview(payload) {
+                        const summary = payload.overview.summary;
+                        const settings = payload.overview.settings;
+                        overviewContent.innerHTML = [
+                            `<p><strong>Environment:</strong> ${settings.app_env}</p>`,
+                            `<p><strong>Repository:</strong> ${settings.repository_backend}</p>`,
+                            `<p><strong>Storage:</strong> ${settings.storage_backend}</p>`,
+                            `<p><strong>Cases:</strong> ${summary.cases_total}</p>`,
+                            `<p><strong>Documents:</strong> ${summary.documents_total}</p>`,
+                            `<p><strong>Operation logs:</strong> ${summary.operation_logs_total}</p>`,
+                            `<p><strong>Notification deliveries:</strong> ${summary.notification_deliveries_total}</p>`,
+                            `<p class="${payload.notifications.needs_attention ? "status-warn" : "status-good"}"><strong>Attention needed:</strong> ${payload.notifications.needs_attention}</p>`,
+                        ].join('');
+                    }
+
+                    function renderRecent(payload) {
+                        recentContent.innerHTML = [
+                            '<h3>Cases</h3>',
+                            renderList(payload.recent.cases, (item) => `<li><code>${item.case_code}</code> ${item.title}</li>`),
+                            '<h3>Documents</h3>',
+                            renderList(payload.recent.documents, (item) => `<li><code>${item.filename}</code> ${item.source_type}</li>`),
+                            '<h3>Operation Logs</h3>',
+                            renderList(payload.recent.operation_logs, (item) => `<li><code>${item.event_type}</code> ${item.message}</li>`),
+                            '<h3>Notification Deliveries</h3>',
+                            renderList(payload.recent.notification_deliveries, (item) => `<li><code>${item.deliver_to}</code> ${item.status}</li>`),
+                        ].join('');
+                    }
+
+                    function renderActivity(payload) {
+                        activityContent.innerHTML = renderList(payload.activity.items, (item) => `<li><code>${item.kind}</code> ${item.title} - ${item.summary}</li>`);
+                    }
+
+                    function renderNotifications(payload) {
+                        const body = payload.notifications;
+                        notificationContent.innerHTML = [
+                            `<p><strong>Total:</strong> ${body.total}</p>`,
+                            `<p><strong>Success:</strong> ${body.success_total}</p>`,
+                            `<p><strong>Failed:</strong> ${body.failed_total}</p>`,
+                            `<p><strong>Failure rate:</strong> ${body.failure_rate}</p>`,
+                            renderList(body.recent_failures, (item) => `<li><code>${item.deliver_to}</code> ${item.status} ${item.created_at}</li>`),
+                        ].join('');
+                    }
+
+                    function renderResources(payload) {
+                        resourceContent.innerHTML = renderList(payload.resources, (resource) => `<li><strong>${resource.name}</strong> - ${resource.collection_path || resource.overview_path || resource.summary_path || ""}</li>`);
+                    }
+
+                    async function loadAdmin() {
+                        const params = readFilters();
+                        const response = await fetch(`/admin/dashboard?${params.toString()}`);
+                        const payload = await response.json();
+                        renderOverview(payload);
+                        renderRecent(payload);
+                        renderActivity(payload);
+                        renderNotifications(payload);
+                        rawContent.textContent = JSON.stringify(payload, null, 2);
+                    }
+
+                    async function loadResources() {
+                        const response = await fetch('/admin/resources');
+                        const payload = await response.json();
+                        renderResources(payload);
+                    }
+
+                    document.getElementById("refreshButton").addEventListener("click", loadAdmin);
+                    document.getElementById("loadResourcesButton").addEventListener("click", loadResources);
+                    document.getElementById("activityKind").addEventListener("change", loadAdmin);
+                    document.getElementById("activityCaseId").addEventListener("change", loadAdmin);
+                    document.getElementById("activityDocumentId").addEventListener("change", loadAdmin);
+                    document.getElementById("activityDeliverTo").addEventListener("change", loadAdmin);
+
+                    loadAdmin();
+                    loadResources();
+                </script>
+            </body>
+        </html>
+        """
 
     @app.get("/notifications/due")
     def preview_notifications(

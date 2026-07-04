@@ -35,6 +35,10 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `app/api/main.py` also returns status breakdowns for cases, invoices, outputs, and document source types from `/admin/overview`.
 - The dashboard summary now includes per-event-type, per-resource, and top-resource counts.
 - `app/api/main.py` exposes `/admin/recent` for quick latest-item inspection and `/admin/activity` for a merged admin timeline with kind/case/document filters.
+- `app/api/main.py` exposes `/admin/dashboard` as the first consolidated admin landing payload.
+- `app/api/main.py` exposes `/admin` as a lightweight HTML admin landing page.
+- `app/api/main.py` exposes `/admin/resources` as a compact admin resource manifest.
+- `app/api/main.py` exposes `/admin/ui` as a lightweight browser-facing admin UI shell.
 - `app/mcp/http.py` now drains queued subscription-change events through `GET /mcp` as SSE lines before the keep-alive comment.
 - `app/api/main.py` now queues case, document, and ingestion resource-change notifications into the MCP transport after successful mutations.
 - `app/mcp/server.py` now records MCP usage events into the operation log for initialize, tools, resources, prompts, and unknown methods.
@@ -169,6 +173,10 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `GET /admin/overview` is the current best low-friction starting point for a React-admin style UI.
 - `GET /admin/recent` is the current best quick-look endpoint for operator timelines and latest activity.
 - `GET /admin/activity` is the current best merged timeline endpoint for admin-style dashboards, and it now accepts kind/case/document filters.
+- `GET /admin/dashboard` is the current best combined landing endpoint for a React-admin style UI.
+- `GET /admin` is the current best human-readable landing page for the admin surface.
+- `GET /admin/resources` is the current best resource manifest for a React-admin style integration.
+- `GET /admin/ui` is the current best browser-facing admin shell before a full React-admin app exists.
 
 ## Working Rule For Future Changes
 

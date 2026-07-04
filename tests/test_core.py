@@ -495,6 +495,50 @@ class ApiTests(unittest.TestCase):
                         all(item["entity_id"] == document_two.id for item in document_activity_body["items"])
                     )
 
+                    admin_dashboard = client.get(
+                        "/admin/dashboard",
+                        params={
+                            "recent_limit": 1,
+                            "activity_limit": 5,
+                            "kind": "case",
+                            "case_id": case_two.id,
+                        },
+                    )
+                    self.assertEqual(200, admin_dashboard.status_code)
+                    dashboard_body = admin_dashboard.json()
+                    self.assertEqual("development", dashboard_body["overview"]["settings"]["app_env"])
+                    self.assertEqual(2, dashboard_body["overview"]["summary"]["cases_total"])
+                    self.assertEqual(1, dashboard_body["recent"]["limit"])
+                    self.assertEqual("CASE-API-2", dashboard_body["recent"]["cases"][0]["case_code"])
+                    self.assertEqual(5, dashboard_body["activity"]["limit"])
+                    self.assertTrue(all(item["kind"] == "case" for item in dashboard_body["activity"]["items"]))
+                    self.assertEqual(1, dashboard_body["notifications"]["total"])
+                    self.assertEqual(0, len(dashboard_body["notifications"]["recent_failures"]))
+
+                    admin_page = client.get("/admin")
+                    self.assertEqual(200, admin_page.status_code)
+                    self.assertIn("O's flow Admin", admin_page.text)
+                    self.assertIn("/admin/dashboard", admin_page.text)
+                    self.assertIn("CASE-API-2", admin_page.text)
+                    self.assertIn("appendix.jpg", admin_page.text)
+
+                    admin_resources = client.get("/admin/resources")
+                    self.assertEqual(200, admin_resources.status_code)
+                    resources_body = admin_resources.json()
+                    self.assertEqual(
+                        ["cases", "documents", "operation_logs", "notification_deliveries", "admin"],
+                        [resource["name"] for resource in resources_body["resources"]],
+                    )
+                    self.assertIn("collection_path", resources_body["resources"][0])
+                    self.assertIn("filters", resources_body["resources"][1])
+
+                    admin_ui = client.get("/admin/ui")
+                    self.assertEqual(200, admin_ui.status_code)
+                    self.assertIn("O's flow Admin UI", admin_ui.text)
+                    self.assertIn("/admin/dashboard", admin_ui.text)
+                    self.assertIn("/admin/resources", admin_ui.text)
+                    self.assertIn("activityKind", admin_ui.text)
+
                     cases_page_one = client.get("/cases/search", params={"limit": 1})
                     self.assertEqual(200, cases_page_one.status_code)
                     self.assertEqual("2", cases_page_one.headers.get("X-Total-Count"))

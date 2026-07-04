@@ -67,6 +67,10 @@ O's flow V2 is the next production-oriented version of O's flow.
 - `GET /admin/overview` also includes status breakdowns for cases, invoices, outputs, and document source types.
 - `GET /admin/recent` exposes the latest cases, documents, operation logs, and notification deliveries for quick operator inspection.
 - `GET /admin/activity` exposes a merged admin timeline for cases, documents, operation logs, and notification deliveries, with kind/case/document filters for admin UI use.
+- `GET /admin/dashboard` combines the overview, recent items, activity timeline, and notification delivery summary for the first admin landing page.
+- `GET /admin` exposes a lightweight HTML admin landing page that links to the admin APIs and surfaces the current snapshot.
+- `GET /admin/resources` lists the current admin-facing resource manifest for React-admin style integration.
+- `GET /admin/ui` exposes a lightweight browser-facing admin UI shell that fetches the dashboard and resource manifest.
 - Ingestion service scaffold is in place.
 - Processing job ledger and API visibility are in place.
 - Dockerfile is in place for containerized API startup.
