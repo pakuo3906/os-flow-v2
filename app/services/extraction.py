@@ -20,6 +20,15 @@ _PDF_LITERAL_RE = re.compile(r"\((?:\\.|[^()])*\)\s*Tj", re.S)
 _PDF_ARRAY_RE = re.compile(r"\[(.*?)\]\s*TJ", re.S)
 _PDF_STRING_RE = re.compile(r"\((?:\\.|[^()])*\)")
 _IMAGE_EXTENSIONS = {".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+_TEXT_LIKE_MIME_TYPES = {
+    "application/toml",
+    "application/x-yaml",
+    "text/markdown",
+    "text/x-markdown",
+    "text/x-rst",
+    "text/x-yaml",
+    "text/yaml",
+}
 
 
 @dataclass(frozen=True)
@@ -141,7 +150,7 @@ def _is_text_like(extension: str, mime_type: str) -> bool:
         ".ini",
         ".cfg",
         ".env",
-    } or mime_type.startswith("text/")
+    } or mime_type.startswith("text/") or mime_type in _TEXT_LIKE_MIME_TYPES
 
 
 def _is_image(extension: str, mime_type: str) -> bool:

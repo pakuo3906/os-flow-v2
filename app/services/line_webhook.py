@@ -136,6 +136,33 @@ def build_line_message_extra_metadata(event: dict[str, Any], message: dict[str, 
     quoted_message_id = str(message.get("quotedMessageId") or event.get("quotedMessageId") or "").strip()
     if quoted_message_id:
         extra_metadata["quoted_message_id"] = quoted_message_id
+    message_type = str(message.get("type") or "").strip()
+    if message_type == "sticker":
+        sticker_id = str(message.get("stickerId") or "").strip()
+        package_id = str(message.get("packageId") or "").strip()
+        sticker_resource_type = str(message.get("stickerResourceType") or "").strip()
+        keywords = message.get("keywords") or []
+        if sticker_id:
+            extra_metadata["sticker_id"] = sticker_id
+        if package_id:
+            extra_metadata["package_id"] = package_id
+        if sticker_resource_type:
+            extra_metadata["sticker_resource_type"] = sticker_resource_type
+        if isinstance(keywords, list) and keywords:
+            extra_metadata["keywords"] = [str(keyword) for keyword in keywords if str(keyword).strip()]
+    elif message_type == "location":
+        title = str(message.get("title") or "").strip()
+        address = str(message.get("address") or "").strip()
+        latitude = message.get("latitude")
+        longitude = message.get("longitude")
+        if title:
+            extra_metadata["location_title"] = title
+        if address:
+            extra_metadata["location_address"] = address
+        if latitude is not None:
+            extra_metadata["location_latitude"] = latitude
+        if longitude is not None:
+            extra_metadata["location_longitude"] = longitude
     return extra_metadata
 
 

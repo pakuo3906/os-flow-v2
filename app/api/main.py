@@ -34,6 +34,7 @@ from app.services.line_webhook import (
     LineWebhookClient,
     build_line_event_extra_metadata,
     build_line_event_summary,
+    build_line_message_extra_metadata,
 )
 from app.services.notifications import NotificationService
 from app.services.ingestion import IngestionService
@@ -663,6 +664,9 @@ def create_app() -> FastAPI:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return {}
+        message = event_json.get("message")
+        if isinstance(message, dict):
+            return build_line_message_extra_metadata(event_json, message)
         return build_line_event_extra_metadata(event_json)
 
     def _line_webhook_extra_metadata(metadata_json: dict[str, Any]) -> dict[str, Any]:
@@ -678,6 +682,14 @@ def create_app() -> FastAPI:
             "account_link_result",
             "account_link_nonce",
             "video_play_complete_tracking_id",
+            "sticker_id",
+            "package_id",
+            "sticker_resource_type",
+            "keywords",
+            "location_title",
+            "location_address",
+            "location_latitude",
+            "location_longitude",
         )
         return {key: metadata_json.get(key) for key in extra_keys if metadata_json.get(key) is not None}
 

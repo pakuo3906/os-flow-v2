@@ -1370,6 +1370,16 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(2, len(logs))
                     metadata = [json.loads(log.metadata_json) for log in logs]
                     self.assertCountEqual(["sticker", "location"], [item["message_type"] for item in metadata])
+                    sticker_metadata = next(item for item in metadata if item["message_type"] == "sticker")
+                    self.assertEqual("1", sticker_metadata["sticker_id"])
+                    self.assertEqual("1", sticker_metadata["package_id"])
+                    self.assertEqual("STATIC", sticker_metadata["sticker_resource_type"])
+                    self.assertEqual(["hello", "thanks"], sticker_metadata["keywords"])
+                    location_metadata = next(item for item in metadata if item["message_type"] == "location")
+                    self.assertEqual("Client office", location_metadata["location_title"])
+                    self.assertEqual("Tokyo", location_metadata["location_address"])
+                    self.assertEqual(35.681236, location_metadata["location_latitude"])
+                    self.assertEqual(139.767125, location_metadata["location_longitude"])
             finally:
                 app.state.repository.close()
 
@@ -3378,6 +3388,23 @@ class ExtractionTests(unittest.TestCase):
                 self.assertIsNotNone(details)
                 assert details is not None
                 self.assertEqual(expected_source_type, details.source_type)
+                self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_text_like_mime_types_without_extension_hints(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        cases = [
+            ("document.unknown", b"# Heading\n\nBody", "text/markdown"),
+            ("config.unknown", b"root: true\nname: oflow", "application/x-yaml"),
+            ("notes.unknown", b"[tool.poetry]\nname = 'oflow'", "application/toml"),
+        ]
+
+        for filename, content, mime_type in cases:
+            with self.subTest(filename=filename, mime_type=mime_type):
+                details = extract_text_details(filename, content, mime_type)
+                self.assertIsNotNone(details)
+                assert details is not None
+                self.assertEqual("text", details.source_type)
                 self.assertEqual("builtin", details.engine)
 
     def test_extract_text_details_handles_rtf_documents(self) -> None:

@@ -134,7 +134,7 @@ The markdown report mirrors the same data in a human-readable format for Slack, 
 - A LINE webhook bridge is also available at `/connectors/line/webhook` for signed LINE Messaging API events, including text and file/media ingestion.
 - LINE media events without a case code can fall back to the `LINE_INBOX_CASE_CODE` triage bucket, which defaults to `LINE-INBOX`.
 - Common config and documentation text formats such as `.toml`, `.ini`, `.cfg`, `.env`, `.rst`, and `.adoc` are also treated as text-like for extraction.
-- LINE sticker and location messages are also stored as simple text snapshots in the inbox bucket so non-file business notes are not lost.
+- LINE sticker and location messages are also stored as simple text snapshots in the inbox bucket so non-file business notes are not lost, and structured sticker/location metadata is preserved in operation logs for later filtering and audit.
 - LINE follow-style non-message events are also stored as JSON snapshots in the inbox bucket so contact events are not lost.
 - LINE join and leave events are also stored as JSON snapshots in the inbox bucket so group membership changes are not lost.
 - LINE memberJoined and memberLeft events are also stored as JSON snapshots with readable summaries.
