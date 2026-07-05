@@ -163,7 +163,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
 - An optional OCR/image extraction entry point now exists, PDF extraction now prefers optional parser libraries when they are available, scanned-PDF OCR can be enabled with `pdf2image`, image preprocessing now helps OCR readiness, extraction provenance now stays in RAG metadata, and document list/detail / admin UI now expose the latest extraction snapshot, but a production-grade OCR backend, tuning, and deployment-ready OCR stack are still future work.
 - The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, and it now exposes a clear closed-state guard on its connection, but a cleaner DB/session boundary should still be added later.
-- The full local test suite is currently passing (136 tests).
+- The full local test suite is currently passing (137 tests).
 
 ## Verified Commands
 
@@ -207,6 +207,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `app/services/extraction.py` now also has builtin `.csv` and `.tsv` extraction that normalizes rows for search-friendly text output.
 - `app/services/extraction.py` now strips HTML script/style noise before extracting text, which keeps HTML mail and page snippets cleaner.
 - `app/services/extraction.py` now also treats common text-like MIME types such as Markdown, YAML, TOML, and RST as plain-text extraction inputs even when the filename extension is unhelpful.
+- `app/services/extraction.py` now also has builtin JSONL / NDJSON extraction so line-delimited JSON stays searchable without extra tooling.
 
 ## Working Rule For Future Changes
 

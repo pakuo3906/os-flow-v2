@@ -3392,6 +3392,22 @@ class ExtractionTests(unittest.TestCase):
                 self.assertEqual(expected_source_type, details.source_type)
                 self.assertEqual("builtin", details.engine)
 
+    def test_extract_text_details_handles_jsonl_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        details = extract_text_details(
+            "events.jsonl",
+            b'{"event":"created","id":1}\n{"event":"updated","id":2}\n',
+            "application/x-ndjson",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("jsonl", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn('"event": "created"', details.text)
+        self.assertIn('"event": "updated"', details.text)
+
     def test_extract_text_details_handles_text_like_mime_types_without_extension_hints(self) -> None:
         from app.services.extraction import extract_text_details
 

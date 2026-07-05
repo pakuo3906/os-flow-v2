@@ -117,6 +117,15 @@ def extract_text_details(filename: str, content: bytes, mime_type: str | None = 
         text = _decode_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="text", engine="builtin")
 
+    if extension in {".jsonl", ".ndjson"} or mime_type in {
+        "application/jsonl",
+        "application/ndjson",
+        "application/x-ndjson",
+        "text/x-ndjson",
+    }:
+        text = _extract_json_lines_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="jsonl", engine="builtin")
+
     if extension == ".json" or "json" in mime_type:
         text = _extract_json_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="json", engine="builtin")
@@ -485,6 +494,24 @@ def _extract_json_text(content: bytes) -> str | None:
         return raw_text
     pretty = json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True)
     return pretty.strip() or None
+
+
+def _extract_json_lines_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    rendered_lines: list[str] = []
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            return raw_text
+        rendered_lines.append(json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True))
+    rendered = "\n\n".join(rendered_lines)
+    return rendered.strip() or None
 
 
 def _extract_docx_text(content: bytes) -> str | None:
