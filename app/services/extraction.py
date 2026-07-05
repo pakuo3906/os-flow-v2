@@ -6,7 +6,9 @@ import email
 import email.policy
 import json
 import re
+import tempfile
 import zipfile
+from contextlib import suppress
 from io import BytesIO
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,15 +35,21 @@ def get_extraction_capabilities() -> dict[str, bool]:
     pdf2image_available = _has_module("pdf2image")
     pillow_available = _has_module("PIL")
     pytesseract_available = _has_module("pytesseract")
+    xlrd_available = _has_module("xlrd")
+    extract_msg_available = _has_module("extract_msg")
     return {
         "pypdf": pypdf_available,
         "pdfplumber": pdfplumber_available,
         "pdf2image": pdf2image_available,
         "pillow": pillow_available,
         "pytesseract": pytesseract_available,
+        "xlrd": xlrd_available,
+        "extract_msg": extract_msg_available,
         "pdf_text_parsing_ready": pypdf_available or pdfplumber_available,
         "image_ocr_ready": pillow_available and pytesseract_available,
         "scanned_pdf_ocr_ready": pdf2image_available and pillow_available and pytesseract_available,
+        "legacy_xls_ready": xlrd_available,
+        "legacy_outlook_msg_ready": extract_msg_available,
 }
 
 
@@ -66,6 +74,10 @@ def extract_text_details(filename: str, content: bytes, mime_type: str | None = 
         text = _extract_odt_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="odt", engine="builtin")
 
+    if extension == ".xls" or mime_type in {"application/vnd.ms-excel", "application/msexcel"}:
+        text = _extract_xls_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="spreadsheet", engine="xlrd")
+
     if extension in {".xlsx", ".xlsm"} or "sheet" in mime_type or "excel" in mime_type:
         text = _extract_xlsx_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="spreadsheet", engine="builtin")
@@ -77,6 +89,10 @@ def extract_text_details(filename: str, content: bytes, mime_type: str | None = 
     if extension == ".eml" or "message/rfc822" in mime_type or "email" in mime_type:
         text = _extract_eml_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="eml", engine="builtin")
+
+    if extension == ".msg" or "vnd.ms-outlook" in mime_type or "ms-outlook" in mime_type:
+        text = _extract_msg_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="msg", engine="extract_msg")
 
     if extension in {".csv", ".tsv"} or "csv" in mime_type or "tsv" in mime_type:
         delimiter = "\t" if extension == ".tsv" or "tsv" in mime_type else ","
@@ -230,6 +246,48 @@ def _extract_opendocument_text(content: bytes) -> str | None:
     return cleaned or None
 
 
+def _extract_xls_text(content: bytes) -> str | None:
+    try:
+        import xlrd
+    except Exception:
+        return None
+
+    try:
+        workbook = xlrd.open_workbook(file_contents=content)
+    except Exception:
+        return None
+
+    chunks: list[str] = []
+    try:
+        sheets = workbook.sheets()
+    except Exception:
+        return None
+
+    for sheet in sheets:
+        try:
+            row_count = sheet.nrows
+            col_count = sheet.ncols
+        except Exception:
+            continue
+        for row_index in range(row_count):
+            cells: list[str] = []
+            for col_index in range(col_count):
+                try:
+                    value = sheet.cell_value(row_index, col_index)
+                except Exception:
+                    continue
+                if value is None:
+                    continue
+                cell_text = str(value).strip()
+                if cell_text:
+                    cells.append(cell_text)
+            if cells:
+                chunks.append(" ".join(cells))
+
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+    return cleaned or None
+
+
 def _load_xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
     try:
         raw_xml = archive.read("xl/sharedStrings.xml")
@@ -291,6 +349,14 @@ def _extract_eml_text(content: bytes) -> str | None:
         return None
 
     chunks: list[str] = []
+    subject = str(message.get("subject") or "").strip()
+    if subject:
+        chunks.append(f"Subject: {subject}")
+    header_fields = ("from", "to", "cc", "date")
+    for header_name in header_fields:
+        header_value = str(message.get(header_name) or "").strip()
+        if header_value:
+            chunks.append(f"{header_name.title()}: {header_value}")
     for part in message.walk():
         content_type = (part.get_content_type() or "").lower()
         if part.is_multipart():
@@ -312,10 +378,54 @@ def _extract_eml_text(content: bytes) -> str | None:
                 if isinstance(payload, bytes):
                     payload = _decode_text(payload)
             if isinstance(payload, str) and payload.strip():
-                chunks.append(_extract_html_text(payload.encode("utf-8")) or payload)
+                chunks.append(_extract_html_payload_text(payload))
 
-    cleaned = _normalize_extracted_text("\n".join(chunks))
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
     return cleaned or None
+
+
+def _extract_msg_text(content: bytes) -> str | None:
+    try:
+        import extract_msg
+    except Exception:
+        return None
+
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".msg") as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+
+        try:
+            message = extract_msg.Message(temp_path)
+        except Exception:
+            return None
+
+        chunks: list[str] = []
+        subject = str(getattr(message, "subject", "") or "").strip()
+        if subject:
+            chunks.append(f"Subject: {subject}")
+        for header_name in ("sender", "to", "cc", "date"):
+            header_value = str(getattr(message, header_name, "") or "").strip()
+            if header_value:
+                chunks.append(f"{header_name.title()}: {header_value}")
+        body = str(getattr(message, "body", "") or "").strip()
+        if not body:
+            body = str(getattr(message, "htmlBody", "") or "").strip()
+            if body:
+                body = _extract_html_payload_text(body)
+        if body:
+            chunks.append(body)
+
+        cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+        return cleaned or None
+    finally:
+        with suppress(Exception):
+            if "message" in locals() and hasattr(message, "close"):
+                message.close()
+        if temp_path is not None:
+            with suppress(Exception):
+                Path(temp_path).unlink(missing_ok=True)
 
 
 def _extract_delimited_text(content: bytes, *, delimiter: str) -> str | None:
@@ -335,6 +445,11 @@ def _extract_delimited_text(content: bytes, *, delimiter: str) -> str | None:
             chunks.append("\t".join(cells))
     cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
     return cleaned or None
+
+
+def _extract_html_payload_text(value: str) -> str:
+    extracted = _extract_html_text(value.encode("utf-8"))
+    return extracted or value
 
 
 def _extract_json_text(content: bytes) -> str | None:
@@ -529,7 +644,7 @@ def _extract_pdf_text_with_ocr(content: bytes) -> str | None:
         return None
 
     try:
-        pages = convert_from_bytes(content)
+        pages = convert_from_bytes(content, dpi=300)
     except Exception:
         return None
 

@@ -136,8 +136,11 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - LINE follow-style non-message events are stored as JSON snapshots in the inbox bucket so contact events are preserved too.
 - LINE join and leave events are also stored as JSON snapshots in the inbox bucket so membership changes are preserved too.
 - LINE memberJoined and memberLeft events are also stored as JSON snapshots with readable summaries.
-- LINE postback and beacon events are also stored as JSON snapshots so interaction events are preserved too.
-- LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries.
+- LINE postback and beacon events are also stored as JSON snapshots with readable summaries so interaction details are easier to scan.
+- LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries so connection and playback details remain visible.
+- LINE message webhook logs also preserve reply tokens, redelivery flags, and quoted message IDs so retry and reply diagnostics stay visible.
+- `/line-webhooks/activity` and `/line-webhooks/pending` now surface the same LINE webhook helper metadata so operators can inspect reply and retry context without opening raw JSON.
+- `/line-webhooks/report` and `/line-webhooks/alerts` now include the same latest-pending helper metadata in both JSON and Markdown forms.
 - LINE unsend events are also stored as JSON snapshots with the removed message ID preserved in metadata when present.
 - Pending LINE retries and non-message snapshots now keep searchable operation-log metadata as well.
 - LINE webhook accept / skip / signature-failure outcomes are now recorded in the operation log.
@@ -158,7 +161,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
 - An optional OCR/image extraction entry point now exists, PDF extraction now prefers optional parser libraries when they are available, scanned-PDF OCR can be enabled with `pdf2image`, image preprocessing now helps OCR readiness, extraction provenance now stays in RAG metadata, and document list/detail / admin UI now expose the latest extraction snapshot, but a production-grade OCR backend, tuning, and deployment-ready OCR stack are still future work.
 - The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, and it now exposes a clear closed-state guard on its connection, but a cleaner DB/session boundary should still be added later.
-- The full local test suite is currently passing (132 tests).
+- The full local test suite is currently passing (134 tests).
 
 ## Verified Commands
 
@@ -171,7 +174,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 ## Best Next Steps
 
 1. Run `scripts/register_notification_jobs.ps1 -Apply -Force` on the target machine when you want the recommended Windows schedules to become active.
-2. Extend the LINE webhook bridge with richer event support for additional message event variants if they are needed operationally.
+2. Extend the LINE webhook bridge with reply / quote / attachment metadata if those LINE variants become operationally useful.
 3. Expand notification delivery history with retry policies, failure dashboards, or alerting hooks if operational volume increases.
 4. Implement the InsForge/PostgreSQL repository adapter and managed storage adapter behind the new runtime boundary.
 5. Expand OCR and image/PDF extraction into a production-grade pipeline so smartphone photos become searchable data.
@@ -197,6 +200,8 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `app/services/extraction.py` now also has builtin `.xlsx` extraction so simple spreadsheet text becomes searchable without extra dependencies.
 - `app/services/extraction.py` now also has builtin `.ods` extraction so OpenDocument spreadsheets become searchable without extra dependencies.
 - `app/services/extraction.py` now also has builtin `.odt` extraction so OpenDocument text documents become searchable without extra dependencies.
+- `app/services/extraction.py` now also has builtin `.xls` extraction behind optional xlrd support for legacy Excel files.
+- `app/services/extraction.py` now also has builtin `.msg` extraction behind optional extract_msg support for Outlook mail files.
 - `app/services/extraction.py` now also has builtin `.csv` and `.tsv` extraction that normalizes rows for search-friendly text output.
 - `app/services/extraction.py` now strips HTML script/style noise before extracting text, which keeps HTML mail and page snippets cleaner.
 

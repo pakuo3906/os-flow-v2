@@ -30,7 +30,11 @@ from app.services.notification_delivery_report import (
     build_notification_delivery_summary,
 )
 from app.services.notification_delivery import render_notification_delivery_report_markdown
-from app.services.line_webhook import LineWebhookClient
+from app.services.line_webhook import (
+    LineWebhookClient,
+    build_line_event_extra_metadata,
+    build_line_event_summary,
+)
 from app.services.notifications import NotificationService
 from app.services.ingestion import IngestionService
 from app.mcp.http import MCPHttpTransport
@@ -105,6 +109,11 @@ def build_line_webhook_report_payload(
             "attention_reason": attention_reason,
         },
         "pending_backlog_latest": _serialize(pending_backlog_latest[0]) if pending_backlog_latest else None,
+        "pending_backlog_latest_summary": (
+            _line_webhook_helper_metadata(_parse_metadata_json(pending_backlog_latest[0].metadata_json))
+            if pending_backlog_latest
+            else None
+        ),
         "recent_events": _serialize(recent_events),
     }
 
@@ -179,6 +188,23 @@ def _parse_metadata_json(raw_value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _line_webhook_helper_metadata(metadata_json: dict[str, Any]) -> dict[str, Any]:
+    extra_keys = (
+        "reply_token",
+        "is_redelivery",
+        "quoted_message_id",
+        "unsend_message_id",
+        "postback_data",
+        "postback_params",
+        "beacon_hwid",
+        "beacon_dm",
+        "account_link_result",
+        "account_link_nonce",
+        "video_play_complete_tracking_id",
+    )
+    return {key: metadata_json.get(key) for key in extra_keys if metadata_json.get(key) is not None}
 
 
 def _build_admin_activity_item(
@@ -631,34 +657,29 @@ def create_app() -> FastAPI:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return None
-        event_type = str(event_json.get("type") or "unknown")
-        source = event_json.get("source") or {}
-        source_type = str(source.get("type") or "")
-        source_id = source.get("groupId") or source.get("roomId") or source.get("userId") or ""
-        summary = f"LINE {event_type} event"
-        if source_type or source_id:
-            summary += f" from {source_type or 'unknown'}"
-            if source_id:
-                summary += f" {source_id}"
-        if event_type == "unsend":
-            unsend = event_json.get("unsend") or {}
-            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
-            if unsend_message_id:
-                summary += f" for message {unsend_message_id}"
-        return summary
+        return build_line_event_summary(event_json)
 
     def _line_event_extra_metadata(item: Any) -> dict[str, Any]:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return {}
-        event_type = str(event_json.get("type") or "unknown")
-        extra_metadata: dict[str, Any] = {}
-        if event_type == "unsend":
-            unsend = event_json.get("unsend") or {}
-            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
-            if unsend_message_id:
-                extra_metadata["unsend_message_id"] = unsend_message_id
-        return extra_metadata
+        return build_line_event_extra_metadata(event_json)
+
+    def _line_webhook_extra_metadata(metadata_json: dict[str, Any]) -> dict[str, Any]:
+        extra_keys = (
+            "reply_token",
+            "is_redelivery",
+            "quoted_message_id",
+            "unsend_message_id",
+            "postback_data",
+            "postback_params",
+            "beacon_hwid",
+            "beacon_dm",
+            "account_link_result",
+            "account_link_nonce",
+            "video_play_complete_tracking_id",
+        )
+        return {key: metadata_json.get(key) for key in extra_keys if metadata_json.get(key) is not None}
 
     def _line_webhook_event_types() -> tuple[str, ...]:
         return (
@@ -695,6 +716,7 @@ def create_app() -> FastAPI:
             "reason": metadata_json.get("reason"),
             "retry_of_log_id": metadata_json.get("retry_of_log_id"),
             "event_json": event_json,
+            **_line_webhook_extra_metadata(metadata_json),
         }
 
     @app.get("/healthz")
@@ -2090,6 +2112,7 @@ def create_app() -> FastAPI:
         alerts: list[dict[str, object]] = []
         if needs_attention:
             latest = pending_backlog_latest[0] if pending_backlog_latest else None
+            latest_metadata = _parse_metadata_json(latest.metadata_json) if latest is not None else {}
             alerts.append(
                 {
                     "alert_type": "pending_backlog",
@@ -2101,6 +2124,7 @@ def create_app() -> FastAPI:
                         f"which meets or exceeds the threshold of {max(1, pending_backlog_threshold)}."
                     ),
                     "latest_pending": _serialize(latest) if latest else None,
+                    "latest_pending_summary": _line_webhook_helper_metadata(latest_metadata) if latest else None,
                 }
             )
         return {
@@ -2135,11 +2159,15 @@ def create_app() -> FastAPI:
                 )
                 latest_pending = item.get("latest_pending")
                 if latest_pending:
+                    latest_pending_summary = item.get("latest_pending_summary") or {}
                     lines.extend(
                         [
                             f"- latest pending id: {latest_pending.get('id')}",
                             f"- latest pending event type: {latest_pending.get('event_type')}",
                             f"- latest pending created at: {latest_pending.get('created_at')}",
+                            f"- latest pending reply_token: {latest_pending_summary.get('reply_token')}",
+                            f"- latest pending is_redelivery: {latest_pending_summary.get('is_redelivery')}",
+                            f"- latest pending quoted_message_id: {latest_pending_summary.get('quoted_message_id')}",
                         ]
                     )
         else:
@@ -2167,6 +2195,7 @@ def create_app() -> FastAPI:
         if summary.get("attention_reason"):
             lines.append(f"- attention reason: {summary['attention_reason']}")
         if latest_pending:
+            latest_pending_summary = report.get("pending_backlog_latest_summary") or {}
             lines.extend(
                 [
                     "",
@@ -2174,6 +2203,9 @@ def create_app() -> FastAPI:
                     f"- log_id: {latest_pending['id']}",
                     f"- event_type: {latest_pending['event_type']}",
                     f"- created_at: {latest_pending['created_at']}",
+                    f"- reply_token: {latest_pending_summary.get('reply_token')}",
+                    f"- is_redelivery: {latest_pending_summary.get('is_redelivery')}",
+                    f"- quoted_message_id: {latest_pending_summary.get('quoted_message_id')}",
                 ]
             )
         if recent_events:
@@ -2239,6 +2271,7 @@ def create_app() -> FastAPI:
                     "event_type": metadata_json.get("event_type"),
                     "message_type": metadata_json.get("message_type"),
                     "event_json": metadata_json.get("event_json"),
+                    **_line_webhook_extra_metadata(metadata_json),
                 }
             )
         return {

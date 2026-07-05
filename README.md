@@ -137,8 +137,11 @@ The markdown report mirrors the same data in a human-readable format for Slack, 
 - LINE follow-style non-message events are also stored as JSON snapshots in the inbox bucket so contact events are not lost.
 - LINE join and leave events are also stored as JSON snapshots in the inbox bucket so group membership changes are not lost.
 - LINE memberJoined and memberLeft events are also stored as JSON snapshots with readable summaries.
-- LINE postback and beacon events are also stored as JSON snapshots so interaction events are not lost.
-- LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries.
+- LINE postback and beacon events are also stored as JSON snapshots with readable summaries so interaction details are easy to scan.
+- LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries so connection and playback details stay visible.
+- LINE message webhook logs also preserve reply tokens, redelivery flags, and quoted message IDs so retry and reply diagnostics stay visible.
+- `/line-webhooks/activity` and `/line-webhooks/pending` also surface the same LINE webhook helper metadata so operators can inspect reply and retry context without opening raw JSON.
+- `/line-webhooks/report` and `/line-webhooks/alerts` now include the same latest-pending helper metadata in both JSON and Markdown forms.
 - Pending LINE retries and non-message snapshots now keep searchable operation-log metadata as well.
 - LINE webhook accept / skip / signature-failure outcomes are also recorded in the operation log for later review.
 - Pending LINE video/audio items keep the original event JSON in the operation log so they can be retried later through `/line-webhooks/retry-pending`.
@@ -154,7 +157,7 @@ The markdown report mirrors the same data in a human-readable format for Slack, 
 - `python -m app.cli.notification_worker line-webhook-alerts --deliver-to auto` can render or deliver backlog alerts through the existing notification routes.
 - Video and audio events can surface as `pending` while LINE is still preparing the binary content.
 - FastAPI health endpoint scaffold is in place.
-- The local test suite is passing in the local venv (132 tests at the time of this update).
+- The local test suite is passing in the local venv (134 tests at the time of this update).
 - MCP resource reads for case and document detail now include extraction snapshots so the agent-facing surface matches the API/admin views.
 
 ## Notification worker

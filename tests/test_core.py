@@ -453,9 +453,13 @@ class ApiTests(unittest.TestCase):
                             "pdf2image": False,
                             "pillow": False,
                             "pytesseract": False,
+                            "xlrd": False,
+                            "extract_msg": False,
                             "pdf_text_parsing_ready": False,
                             "image_ocr_ready": False,
                             "scanned_pdf_ocr_ready": False,
+                            "legacy_xls_ready": False,
+                            "legacy_outlook_msg_ready": False,
                         },
                         admin_overview.json()["settings"]["extraction"],
                     )
@@ -486,9 +490,13 @@ class ApiTests(unittest.TestCase):
                             "pdf2image": False,
                             "pillow": False,
                             "pytesseract": False,
+                            "xlrd": False,
+                            "extract_msg": False,
                             "pdf_text_parsing_ready": False,
                             "image_ocr_ready": False,
                             "scanned_pdf_ocr_ready": False,
+                            "legacy_xls_ready": False,
+                            "legacy_outlook_msg_ready": False,
                         },
                         backends_body["extraction"],
                     )
@@ -564,9 +572,13 @@ class ApiTests(unittest.TestCase):
                             "pdf2image": False,
                             "pillow": False,
                             "pytesseract": False,
+                            "xlrd": False,
+                            "extract_msg": False,
                             "pdf_text_parsing_ready": False,
                             "image_ocr_ready": False,
                             "scanned_pdf_ocr_ready": False,
+                            "legacy_xls_ready": False,
+                            "legacy_outlook_msg_ready": False,
                         },
                         dashboard_body["overview"]["settings"]["extraction"],
                     )
@@ -1039,9 +1051,12 @@ class ApiTests(unittest.TestCase):
                             "type": "user",
                             "userId": "U-line-user-1",
                         },
+                        "replyToken": "reply-token-1",
+                        "deliveryContext": {"isRedelivery": True},
                         "message": {
                             "id": "message-1",
                             "type": "text",
+                            "quotedMessageId": "quoted-message-1",
                             "text": "CASE-LINE-WEBHOOK Please process this document.",
                         },
                     }
@@ -1078,6 +1093,11 @@ class ApiTests(unittest.TestCase):
                     logs = app.state.repository.list_operation_logs(event_type="line_webhook_ingested")
                     self.assertEqual(1, len(logs))
                     self.assertEqual(body["items"][0]["document_id"], logs[0].document_id)
+                    metadata = json.loads(logs[0].metadata_json)
+                    self.assertEqual("reply-token-1", metadata["reply_token"])
+                    self.assertTrue(metadata["is_redelivery"])
+                    self.assertEqual("quoted-message-1", metadata["quoted_message_id"])
+                    self.assertIn("quotedMessageId quoted-message-1", metadata["event_summary"])
             finally:
                 app.state.repository.close()
 
@@ -1686,7 +1706,14 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(2, len(logs))
                     metadata = [json.loads(log.metadata_json) for log in logs]
                     self.assertCountEqual(["postback", "beacon"], [item["event_type"] for item in metadata])
-                    self.assertTrue(all(item["event_summary"].startswith("LINE ") for item in metadata))
+                    self.assertIn(
+                        "LINE postback event from user U-line-user-10 data CASE-LINE-POSTBACK status=ready params (datetime=2026-07-04T13:00:00+09:00)",
+                        {item["event_summary"] for item in metadata},
+                    )
+                    self.assertIn(
+                        "LINE beacon event from user U-line-user-11 hwid beacon-hwid-1 dm device-message",
+                        {item["event_summary"] for item in metadata},
+                    )
             finally:
                 app.state.repository.close()
 
@@ -1777,8 +1804,8 @@ class ApiTests(unittest.TestCase):
                     self.assertCountEqual(["accountLink", "videoPlayComplete"], [item["event_type"] for item in metadata])
                     self.assertEqual(
                         {
-                            "LINE accountLink event from user U-line-user-12",
-                            "LINE videoPlayComplete event from user U-line-user-13",
+                            "LINE accountLink event from user U-line-user-12 result ok nonce nonce-1",
+                            "LINE videoPlayComplete event from user U-line-user-13 trackingId tracking-1",
                         },
                         {item["event_summary"] for item in metadata},
                     )
@@ -2319,10 +2346,13 @@ class ApiTests(unittest.TestCase):
                         "webhookEventId": "01HZZ-PENDING-ACTIVITY",
                         "contentProvider": {"type": "line"},
                         "source": {"type": "user", "userId": "U-line-user-21"},
+                        "replyToken": "reply-token-activity-1",
+                        "deliveryContext": {"isRedelivery": True},
                         "message": {
                             "id": "video-activity-1",
                             "type": "video",
                             "fileName": "CASE-LINE-ACTIVITY-1.mp4",
+                            "quotedMessageId": "quoted-message-activity-1",
                         },
                     },
                     {
@@ -2365,6 +2395,20 @@ class ApiTests(unittest.TestCase):
                     activity_body = activity_response.json()
                     self.assertEqual(3, len(activity_body))
                     self.assertCountEqual(["follow", "postback", "message"], [item["line_event_type"] for item in activity_body])
+                    message_activity = next(item for item in activity_body if item["line_event_type"] == "message")
+                    self.assertEqual("reply-token-activity-1", message_activity["reply_token"])
+                    self.assertTrue(message_activity["is_redelivery"])
+                    self.assertEqual("quoted-message-activity-1", message_activity["quoted_message_id"])
+
+                    pending_response = client.get("/line-webhooks/pending")
+                    self.assertEqual(200, pending_response.status_code)
+                    self.assertEqual("1", pending_response.headers.get("X-Total-Count"))
+                    pending_body = pending_response.json()
+                    self.assertEqual(1, pending_body["total"])
+                    self.assertEqual(1, len(pending_body["items"]))
+                    self.assertEqual("reply-token-activity-1", pending_body["items"][0]["reply_token"])
+                    self.assertTrue(pending_body["items"][0]["is_redelivery"])
+                    self.assertEqual("video-activity-1", pending_body["items"][0]["event_json"]["message"]["id"])
 
                     filtered_follow = client.get("/line-webhooks/activity", params={"line_event_type": "follow"})
                     self.assertEqual(200, filtered_follow.status_code)
@@ -2433,10 +2477,13 @@ class ApiTests(unittest.TestCase):
                         "webhookEventId": "01HZZ-PENDING-ATTN",
                         "contentProvider": {"type": "line"},
                         "source": {"type": "user", "userId": "U-line-user-31"},
+                        "replyToken": "reply-token-attn-1",
+                        "deliveryContext": {"isRedelivery": True},
                         "message": {
                             "id": "video-attn-1",
                             "type": "video",
                             "fileName": "CASE-LINE-ATTN-VIDEO.mp4",
+                            "quotedMessageId": "quoted-message-attn-1",
                         },
                     }
                 ],
@@ -2471,6 +2518,7 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(0, report_body["summary"]["pending_backlog_count"])
                     self.assertFalse(report_body["summary"]["needs_attention"])
                     self.assertIsNone(report_body["summary"]["attention_reason"])
+                    self.assertIsNone(report_body["pending_backlog_latest_summary"])
 
                     pending_response = client.post(
                         "/connectors/line/webhook",
@@ -2488,6 +2536,9 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(1, alert_body["summary"]["pending_backlog_count"])
                     self.assertTrue(alert_body["summary"]["needs_attention"])
                     self.assertIn("threshold", alert_body["summary"]["attention_reason"])
+                    self.assertEqual("reply-token-attn-1", alert_body["pending_backlog_latest_summary"]["reply_token"])
+                    self.assertTrue(alert_body["pending_backlog_latest_summary"]["is_redelivery"])
+                    self.assertEqual("quoted-message-attn-1", alert_body["pending_backlog_latest_summary"]["quoted_message_id"])
             finally:
                 app.state.repository.close()
 
@@ -2529,10 +2580,13 @@ class ApiTests(unittest.TestCase):
                         "webhookEventId": "01HZZ-ALERT",
                         "contentProvider": {"type": "line"},
                         "source": {"type": "user", "userId": "U-line-user-40"},
+                        "replyToken": "reply-token-1",
+                        "deliveryContext": {"isRedelivery": True},
                         "message": {
                             "id": "video-alert-1",
                             "type": "video",
                             "fileName": "CASE-LINE-ALERT-1.mp4",
+                            "quotedMessageId": "quoted-message-1",
                         },
                     }
                 ],
@@ -2560,7 +2614,6 @@ class ApiTests(unittest.TestCase):
                         },
                     )
                     self.assertEqual(200, webhook_response.status_code)
-
                     alerts_response = client.get("/line-webhooks/alerts", params={"pending_backlog_threshold": 1})
                     self.assertEqual(200, alerts_response.status_code)
                     alerts_body = alerts_response.json()
@@ -2568,18 +2621,24 @@ class ApiTests(unittest.TestCase):
                     self.assertTrue(alerts_body["needs_attention"])
                     self.assertEqual(1, len(alerts_body["alerts"]))
                     self.assertEqual("pending_backlog", alerts_body["alerts"][0]["alert_type"])
+                    self.assertEqual("reply-token-1", alerts_body["alerts"][0]["latest_pending_summary"]["reply_token"])
+                    self.assertEqual("quoted-message-1", alerts_body["alerts"][0]["latest_pending_summary"]["quoted_message_id"])
 
                     alerts_markdown = client.get("/line-webhooks/alerts.md", params={"pending_backlog_threshold": 1})
                     self.assertEqual(200, alerts_markdown.status_code)
                     self.assertIn("# O's flow LINE Webhook Alerts", alerts_markdown.text)
                     self.assertIn("pending backlog count: 1", alerts_markdown.text)
                     self.assertIn("pending_backlog", alerts_markdown.text)
+                    self.assertIn("latest pending reply_token: reply-token-1", alerts_markdown.text)
+                    self.assertIn("latest pending quoted_message_id: quoted-message-1", alerts_markdown.text)
 
                     markdown_response = client.get("/line-webhooks/report.md", params={"pending_backlog_threshold": 1})
                     self.assertEqual(200, markdown_response.status_code)
                     self.assertIn("# O's flow LINE Webhook Report", markdown_response.text)
                     self.assertIn("pending backlog count: 1", markdown_response.text)
                     self.assertIn("Latest Pending", markdown_response.text)
+                    self.assertIn("reply_token: reply-token-1", markdown_response.text)
+                    self.assertIn("quoted_message_id: quoted-message-1", markdown_response.text)
             finally:
                 app.state.repository.close()
 
@@ -3255,6 +3314,33 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual("odt", details.source_type)
         self.assertEqual("builtin", details.engine)
 
+    def test_extract_text_details_handles_xls_workbooks_when_xlrd_is_available(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        class FakeSheet:
+            nrows = 2
+            ncols = 2
+
+            def cell_value(self, row_index: int, col_index: int):
+                values = [["Hello", "World"], ["10", "20"]]
+                return values[row_index][col_index]
+
+        class FakeWorkbook:
+            def sheets(self):
+                return [FakeSheet()]
+
+        fake_module = types.ModuleType("xlrd")
+        fake_module.open_workbook = lambda file_contents: FakeWorkbook()  # noqa: ARG005
+
+        with patch.dict(sys.modules, {"xlrd": fake_module}):
+            details = extract_text_details("sample.xls", b"fake-xls-bytes", "application/vnd.ms-excel")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello World\n10 20", details.text)
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("xlrd", details.engine)
+
     def test_extract_text_details_handles_csv_files(self) -> None:
         from app.services.extraction import extract_text_details
 
@@ -3323,9 +3409,44 @@ class ExtractionTests(unittest.TestCase):
 
         self.assertIsNotNone(details)
         assert details is not None
-        self.assertEqual("Plain body", details.text)
+        self.assertEqual(
+            "Subject: Example\nFrom: sender@example.com\nTo: receiver@example.com\nPlain body",
+            details.text,
+        )
         self.assertEqual("eml", details.source_type)
         self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_msg_messages_when_extract_msg_is_available(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        class FakeMessage:
+            def __init__(self, path: str) -> None:
+                self.path = path
+                self.subject = "Example MSG"
+                self.sender = "sender@example.com"
+                self.to = "receiver@example.com"
+                self.cc = ""
+                self.date = "2026-07-05"
+                self.body = "Body text"
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        fake_module = types.ModuleType("extract_msg")
+        fake_module.Message = FakeMessage
+
+        with patch.dict(sys.modules, {"extract_msg": fake_module}):
+            details = extract_text_details("sample.msg", b"fake-msg-bytes", "application/vnd.ms-outlook")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual(
+            "Subject: Example MSG\nSender: sender@example.com\nTo: receiver@example.com\nDate: 2026-07-05\nBody text",
+            details.text,
+        )
+        self.assertEqual("msg", details.source_type)
+        self.assertEqual("extract_msg", details.engine)
 
     def test_extract_text_details_strips_html_noise(self) -> None:
         from app.services.extraction import extract_text_details
@@ -3456,7 +3577,13 @@ class ExtractionTests(unittest.TestCase):
             pass
 
         fake_module = types.ModuleType("pdf2image")
-        fake_module.convert_from_bytes = lambda content: [FakePage(), FakePage()]
+        calls: list[tuple[bytes, dict[str, object]]] = []
+
+        def fake_convert_from_bytes(content: bytes, **kwargs: object):  # noqa: ANN001
+            calls.append((content, kwargs))
+            return [FakePage(), FakePage()]
+
+        fake_module.convert_from_bytes = fake_convert_from_bytes
 
         with patch.dict(sys.modules, {"pdf2image": fake_module}), patch(
             "app.services.extraction._extract_text_from_image_object",
@@ -3466,6 +3593,8 @@ class ExtractionTests(unittest.TestCase):
 
         self.assertEqual("Scanned first page\nScanned second page", text)
         self.assertEqual(2, ocr_hook.call_count)
+        self.assertEqual(1, len(calls))
+        self.assertEqual({"dpi": 300}, calls[0][1])
 
     def test_reports_extraction_capabilities_from_installed_optional_modules(self) -> None:
         fake_pypdf = types.ModuleType("pypdf")
@@ -3495,9 +3624,13 @@ class ExtractionTests(unittest.TestCase):
                     "pdf2image": True,
                     "pillow": True,
                     "pytesseract": True,
+                    "xlrd": False,
+                    "extract_msg": False,
                     "pdf_text_parsing_ready": True,
                     "image_ocr_ready": True,
                     "scanned_pdf_ocr_ready": True,
+                    "legacy_xls_ready": False,
+                    "legacy_outlook_msg_ready": False,
                 },
                 capabilities,
             )
