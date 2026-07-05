@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import json
@@ -21,6 +21,10 @@ from app.services.chat_connectors import (
 from app.services.document_snapshots import (
     attach_document_extraction_snapshots,
     build_document_extraction_snapshot_for_document,
+)
+from app.services.demo_pack import (
+    build_demo_pack_guide,
+    build_missing_submissions_payload,
 )
 from app.services.extraction import get_extraction_capabilities
 from app.services.documents import DocumentService
@@ -204,6 +208,11 @@ def _line_webhook_helper_metadata(metadata_json: dict[str, Any]) -> dict[str, An
         "account_link_result",
         "account_link_nonce",
         "video_play_complete_tracking_id",
+        "file_name",
+        "content_provider_type",
+        "content_provider_original_content_url",
+        "content_provider_preview_image_url",
+        "content_type",
     )
     return {key: metadata_json.get(key) for key in extra_keys if metadata_json.get(key) is not None}
 
@@ -658,16 +667,27 @@ def create_app() -> FastAPI:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return None
-        return build_line_event_summary(event_json)
+        summary = build_line_event_summary(event_json)
+        content_type = getattr(item, "content_type", None)
+        if content_type:
+            summary += f" content_type {content_type}"
+        return summary
 
     def _line_event_extra_metadata(item: Any) -> dict[str, Any]:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return {}
+        content_type = getattr(item, "content_type", None)
+        if content_type:
+            metadata = {"content_type": content_type}
+        else:
+            metadata = {}
         message = event_json.get("message")
         if isinstance(message, dict):
-            return build_line_message_extra_metadata(event_json, message)
-        return build_line_event_extra_metadata(event_json)
+            metadata.update(build_line_message_extra_metadata(event_json, message))
+            return metadata
+        metadata.update(build_line_event_extra_metadata(event_json))
+        return metadata
 
     def _line_webhook_extra_metadata(metadata_json: dict[str, Any]) -> dict[str, Any]:
         extra_keys = (
@@ -688,6 +708,9 @@ def create_app() -> FastAPI:
             "keywords",
             "file_name",
             "content_provider_type",
+            "content_provider_original_content_url",
+            "content_provider_preview_image_url",
+            "content_type",
             "location_title",
             "location_address",
             "location_latitude",
@@ -1037,12 +1060,13 @@ def create_app() -> FastAPI:
                     "label_field": "case_code",
                     "default_sort": {"field": "updated_at", "order": "DESC"},
                     "supports": ["list", "show", "edit"],
-                    "actions": ["edit", "activity"],
+                    "actions": ["edit", "activity", "reprocess"],
                     "collection_path": "/cases",
                     "search_path": "/cases/search",
                     "detail_key": "case_id",
                     "detail_path": "/cases/{case_id}",
                     "edit_path": "/cases/{case_id}",
+                    "reprocess_path": "/cases/{case_id}/reprocess-documents",
                     "activity_path": "/cases/{case_id}/activity",
                     "list_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "updated_at"],
                     "detail_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "created_at", "updated_at", "last_processed_at"],
@@ -1073,6 +1097,36 @@ def create_app() -> FastAPI:
                     "list_fields": ["id", "case_id", "source_type", "filename", "mime_type", "version", "is_deleted", "extraction", "updated_at"],
                     "detail_fields": ["id", "case_id", "source_type", "source_path", "storage_key", "filename", "mime_type", "content_hash", "size_bytes", "version", "is_deleted", "deleted_at", "created_at", "updated_at", "extraction"],
                     "filters": ["case_id", "source_type", "is_deleted", "query"],
+                },
+                {
+                    "name": "invoices",
+                    "title": "Invoices",
+                    "id_field": "id",
+                    "label_field": "case_code",
+                    "default_sort": {"field": "due_date", "order": "ASC"},
+                    "supports": ["list", "show"],
+                    "actions": ["edit", "review"],
+                    "collection_path": "/admin/invoices",
+                    "detail_key": "case_id",
+                    "detail_path": "/cases/{case_id}",
+                    "list_fields": ["id", "case_code", "title", "due_date", "invoice_status", "output_status", "updated_at"],
+                    "detail_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "created_at", "updated_at", "last_processed_at"],
+                    "filters": ["invoice_status", "due_before"],
+                },
+                {
+                    "name": "missing_submissions",
+                    "title": "Missing Submissions",
+                    "id_field": "case_id",
+                    "label_field": "case_code",
+                    "default_sort": {"field": "due_date", "order": "ASC"},
+                    "supports": ["list", "show"],
+                    "actions": ["review", "edit"],
+                    "collection_path": "/admin/missing-submissions",
+                    "detail_key": "case_id",
+                    "detail_path": "/cases/{case_id}",
+                    "list_fields": ["case_id", "case_code", "title", "due_date", "invoice_status", "output_status", "missing_submission_reason", "updated_at"],
+                    "detail_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "created_at", "updated_at", "last_processed_at"],
+                    "filters": ["query", "status", "due_before", "invoice_status", "output_status"],
                 },
                 {
                     "name": "operation_logs",
@@ -1143,6 +1197,7 @@ def create_app() -> FastAPI:
                     "listPath": resource.get("collection_path"),
                     "showPath": resource.get("detail_path"),
                     "editPath": resource.get("edit_path"),
+                    "reprocessPath": resource.get("reprocess_path"),
                     "activityPath": resource.get("activity_path"),
                     "summaryPath": resource.get("summary_path"),
                     "trendsPath": resource.get("trends_path"),
@@ -1299,6 +1354,17 @@ def create_app() -> FastAPI:
                     </section>
 
                     <section class="card" style="margin-top: 16px;">
+                        <h2>LINE現場整理パック</h2>
+                        <div class="toolbar">
+                            <button id="demoPackButton" type="button">Load demo pack</button>
+                            <a href="/admin/demo-pack" target="_blank" rel="noreferrer">Open demo pack JSON</a>
+                            <a href="/admin/missing-submissions" target="_blank" rel="noreferrer">Open missing submissions</a>
+                            <a href="/admin/invoices" target="_blank" rel="noreferrer">Open invoices</a>
+                        </div>
+                        <div id="demoPackContent" class="muted">Load the minimal LINE field-organization demo flow here.</div>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
                         <h2>Raw Payload</h2>
                         <pre id="rawContent">Loading raw payload...</pre>
                     </section>
@@ -1333,6 +1399,7 @@ def create_app() -> FastAPI:
                     const notificationExplorerDeliverTo = document.getElementById("notificationExplorerDeliverTo");
                     const notificationExplorerGranularity = document.getElementById("notificationExplorerGranularity");
                     const notificationExplorerContent = document.getElementById("notificationExplorerContent");
+                    const demoPackContent = document.getElementById("demoPackContent");
                     const rawContent = document.getElementById("rawContent");
                     let availableResources = [];
                     let currentCaseId = null;
@@ -1428,6 +1495,66 @@ def create_app() -> FastAPI:
                             `<p><strong>Failure rate:</strong> ${body.failure_rate}</p>`,
                             renderList(body.recent_failures, (item) => `<li><code>${item.deliver_to}</code> ${item.status} ${item.created_at}</li>`),
                         ].join('');
+                    }
+
+                    function renderDemoPack(payload) {
+                        const currentCounts = payload.current_counts || {};
+                        const seededCases = (payload.cases || []).filter((item) => item.present);
+                        const missingPreview = payload.missing_submissions_preview || [];
+                        demoPackContent.innerHTML = [
+                            `<p><strong>${payload.title}</strong></p>`,
+                            `<p class="muted">${payload.scenario}</p>`,
+                            `<p><strong>Seed command:</strong> <code>${payload.seed_command}</code></p>`,
+                            `<p><strong>Seed script:</strong> <code>${payload.seed_script}</code></p>`,
+                            `<p><strong>Ready:</strong> ${payload.seeded ? "yes" : "no"}</p>`,
+                            `<p><strong>Counts:</strong> cases ${currentCounts.cases ?? 0}, documents ${currentCounts.documents ?? 0}, invoices ${currentCounts.invoices ?? 0}, missing submissions ${currentCounts.missing_submissions ?? 0}</p>`,
+                            '<h3>Steps</h3>',
+                            renderList((payload.steps || []).map((step) => ({
+                                title: step.title,
+                                step: step.step,
+                                kind: step.kind,
+                                command: step.command,
+                                path: step.path,
+                                paths: step.paths,
+                                script: step.script,
+                            })), (item) => {
+                                const links = [];
+                                if (item.path) {
+                                    links.push(`<code>${item.path}</code>`);
+                                }
+                                if (Array.isArray(item.paths)) {
+                                    links.push(item.paths.map((path) => `<code>${path}</code>`).join(" "));
+                                }
+                                const extras = [];
+                                if (item.command) {
+                                    extras.push(`<div><strong>Command:</strong> <code>${item.command}</code></div>`);
+                                }
+                                if (item.script) {
+                                    extras.push(`<div><strong>Script:</strong> <code>${item.script}</code></div>`);
+                                }
+                                return `<li><strong>${item.step}. ${item.title}</strong> <span class="muted">(${item.kind})</span>${links.length ? `<div>${links.join(" ")}</div>` : ""}${extras.join("")}</li>`;
+                            }),
+                            '<h3>Seeded cases</h3>',
+                            renderList(seededCases, (item) => `<li><code>${item.case_code}</code> ${item.title} - ${item.invoice_status} / ${item.output_status}</li>`),
+                            '<h3>Missing submissions preview</h3>',
+                            renderList(missingPreview, (item) => `<li><code>${item.case_code}</code> ${item.missing_submission_reason}</li>`),
+                            '<h3>Quick links</h3>',
+                            renderList((payload.resources || []), (item) => `<li><a href="${item.path}" target="_blank" rel="noreferrer">${item.label}</a></li>`),
+                        ].join('');
+                    }
+
+                    async function loadDemoPack() {
+                        const response = await fetch("/admin/demo-pack");
+                        const payload = await response.json();
+                        if (!response.ok) {
+                            demoPackContent.className = "status-bad";
+                            demoPackContent.textContent = payload.detail || "Failed to load demo pack.";
+                            rawContent.textContent = JSON.stringify(payload, null, 2);
+                            return;
+                        }
+                        demoPackContent.className = "";
+                        renderDemoPack(payload);
+                        rawContent.textContent = JSON.stringify({ resource: "demo_pack", payload }, null, 2);
                     }
 
                     function setCaseEditorMessage(message, className = "muted") {
@@ -1869,6 +1996,7 @@ def create_app() -> FastAPI:
                     document.getElementById("notificationExplorerTrendsButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/trends", "notification trends"));
                     document.getElementById("notificationExplorerAlertsButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/alerts", "notification alerts"));
                     document.getElementById("notificationExplorerReportButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/report", "notification report"));
+                    document.getElementById("demoPackButton").addEventListener("click", loadDemoPack);
                     document.getElementById("activityKind").addEventListener("change", loadAdmin);
                     document.getElementById("activityCaseId").addEventListener("change", loadAdmin);
                     document.getElementById("activityDocumentId").addEventListener("change", loadAdmin);
@@ -1935,6 +2063,7 @@ def create_app() -> FastAPI:
 
                     loadAdmin();
                     loadResources();
+                    loadDemoPack();
                 </script>
             </body>
         </html>
@@ -2179,11 +2308,21 @@ def create_app() -> FastAPI:
                             f"- latest pending id: {latest_pending.get('id')}",
                             f"- latest pending event type: {latest_pending.get('event_type')}",
                             f"- latest pending created at: {latest_pending.get('created_at')}",
-                            f"- latest pending reply_token: {latest_pending_summary.get('reply_token')}",
-                            f"- latest pending is_redelivery: {latest_pending_summary.get('is_redelivery')}",
-                            f"- latest pending quoted_message_id: {latest_pending_summary.get('quoted_message_id')}",
                         ]
                     )
+                    for label, key in (
+                        ("latest pending reply_token", "reply_token"),
+                        ("latest pending is_redelivery", "is_redelivery"),
+                        ("latest pending quoted_message_id", "quoted_message_id"),
+                        ("latest pending file_name", "file_name"),
+                        ("latest pending content_provider_type", "content_provider_type"),
+                        ("latest pending content_provider_original_content_url", "content_provider_original_content_url"),
+                        ("latest pending content_provider_preview_image_url", "content_provider_preview_image_url"),
+                        ("latest pending content_type", "content_type"),
+                    ):
+                        value = latest_pending_summary.get(key)
+                        if value is not None:
+                            lines.append(f"- {label}: {value}")
         else:
             lines.extend(["", "## Alerts", "- No alerts."])
         return "\n".join(lines).strip() + "\n"
@@ -2217,18 +2356,43 @@ def create_app() -> FastAPI:
                     f"- log_id: {latest_pending['id']}",
                     f"- event_type: {latest_pending['event_type']}",
                     f"- created_at: {latest_pending['created_at']}",
-                    f"- reply_token: {latest_pending_summary.get('reply_token')}",
-                    f"- is_redelivery: {latest_pending_summary.get('is_redelivery')}",
-                    f"- quoted_message_id: {latest_pending_summary.get('quoted_message_id')}",
                 ]
             )
+            for label, key in (
+                ("reply_token", "reply_token"),
+                ("is_redelivery", "is_redelivery"),
+                ("quoted_message_id", "quoted_message_id"),
+                ("file_name", "file_name"),
+                ("content_provider_type", "content_provider_type"),
+                ("content_provider_original_content_url", "content_provider_original_content_url"),
+                ("content_provider_preview_image_url", "content_provider_preview_image_url"),
+                ("content_type", "content_type"),
+            ):
+                value = latest_pending_summary.get(key)
+                if value is not None:
+                    lines.append(f"- {label}: {value}")
         if recent_events:
             lines.extend(["", "## Recent Events"])
             for item in recent_events:
-                lines.append(
-                    f"- {item.get('created_at')} | {item.get('operation_event_type')} | "
-                    f"{item.get('line_event_type')} | {item.get('message_type') or '-'}"
+                metadata_json = _parse_metadata_json(item.get("metadata_json"))
+                line = (
+                    f"- {item.get('created_at')} | {item.get('event_type')} | "
+                    f"{metadata_json.get('event_type')} | {metadata_json.get('message_type') or '-'}"
                 )
+                extra_bits = []
+                for label, key in (
+                    ("file_name", "file_name"),
+                    ("content_provider_type", "content_provider_type"),
+                    ("content_provider_original_content_url", "content_provider_original_content_url"),
+                    ("content_provider_preview_image_url", "content_provider_preview_image_url"),
+                    ("content_type", "content_type"),
+                ):
+                    value = metadata_json.get(key)
+                    if value is not None:
+                        extra_bits.append(f"{label}: {value}")
+                if extra_bits:
+                    line += " | " + " | ".join(extra_bits)
+                lines.append(line)
         else:
             lines.extend(["", "## Recent Events", "- No recent events."])
         return PlainTextResponse("\n".join(lines).strip() + "\n")
@@ -2761,6 +2925,56 @@ def create_app() -> FastAPI:
             )
         )
 
+    @app.get("/admin/invoices")
+    def admin_invoices(
+        response: Response,
+        invoice_status: str | None = None,
+        due_before: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        repository = current_repository()
+        _set_total_count_header(
+            response,
+            repository.count_invoices(invoice_status=invoice_status, due_before=due_before),
+        )
+        return _serialize(
+            repository.list_invoices(
+                invoice_status=invoice_status,
+                due_before=due_before,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+    @app.get("/admin/missing-submissions")
+    def admin_missing_submissions(
+        response: Response,
+        query: str = "",
+        status: str | None = None,
+        due_before: str | None = None,
+        invoice_status: str | None = None,
+        output_status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        payload = build_missing_submissions_payload(
+            current_repository(),
+            query=query,
+            status=status,
+            due_before=due_before,
+            invoice_status=invoice_status,
+            output_status=output_status,
+            limit=limit,
+            offset=offset,
+        )
+        _set_total_count_header(response, payload["total"])
+        return payload
+
+    @app.get("/admin/demo-pack")
+    def admin_demo_pack() -> dict[str, object]:
+        return build_demo_pack_guide(current_repository(), app.state.settings)
+
     @app.get("/rag/search")
     def search_rag(
         response: Response,
@@ -3155,3 +3369,8 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+
+
+

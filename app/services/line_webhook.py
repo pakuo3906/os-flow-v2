@@ -69,6 +69,14 @@ def build_line_event_summary(event: dict[str, Any]) -> str:
         message_type = str(message.get("type") or "").strip()
         if message_type:
             summary += f" {message_type}"
+        file_name = str(message.get("fileName") or "").strip()
+        if file_name:
+            summary += f" fileName {file_name}"
+        content_provider = event.get("contentProvider") or {}
+        if isinstance(content_provider, dict):
+            content_provider_type = str(content_provider.get("type") or "").strip()
+            if content_provider_type:
+                summary += f" contentProvider {content_provider_type}"
         quoted_message_id = str(message.get("quotedMessageId") or "").strip()
         if quoted_message_id:
             summary += f" quotedMessageId {quoted_message_id}"
@@ -144,6 +152,12 @@ def build_line_message_extra_metadata(event: dict[str, Any], message: dict[str, 
         content_provider_type = str(content_provider.get("type") or "").strip()
         if content_provider_type:
             extra_metadata["content_provider_type"] = content_provider_type
+        original_content_url = str(content_provider.get("originalContentUrl") or "").strip()
+        preview_image_url = str(content_provider.get("previewImageUrl") or "").strip()
+        if original_content_url:
+            extra_metadata["content_provider_original_content_url"] = original_content_url
+        if preview_image_url:
+            extra_metadata["content_provider_preview_image_url"] = preview_image_url
     message_type = str(message.get("type") or "").strip()
     if message_type == "sticker":
         sticker_id = str(message.get("stickerId") or "").strip()
@@ -182,6 +196,7 @@ class LineWebhookItemResult:
     case_id: int | None = None
     document_id: int | None = None
     reason: str | None = None
+    content_type: str | None = None
     event_json: dict[str, Any] | None = None
 
 
@@ -323,6 +338,7 @@ class LineWebhookClient:
                 status="pending",
                 case_code=case_code,
                 reason=reason,
+                content_type=mime_type,
                 event_json=event,
             )
         if content is None:
@@ -331,6 +347,7 @@ class LineWebhookClient:
                 status="skipped",
                 case_code=case_code,
                 reason=reason or "content_unavailable",
+                content_type=mime_type,
                 event_json=event,
             )
 
@@ -347,6 +364,7 @@ class LineWebhookClient:
                 "message_type": message_type,
                 "file_name": message_file_name or None,
                 "source_type": source.get("type"),
+                "content_type": mime_type,
                 **build_line_message_extra_metadata(event, message),
             },
         )
@@ -374,6 +392,7 @@ class LineWebhookClient:
             case_code=case_code,
             case_id=getattr(result, "case_id", None),
             document_id=getattr(result, "document_id", None),
+            content_type=mime_type,
             event_json=event,
         )
 

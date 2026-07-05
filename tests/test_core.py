@@ -1,7 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
+import bz2
+import gzip
 import hashlib
+import lzma
 import io
 import hmac
 import json
@@ -11,6 +14,7 @@ import types
 import tempfile
 import unittest
 import warnings
+import tarfile
 from pathlib import Path
 import zipfile
 from unittest.mock import patch
@@ -596,7 +600,7 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(200, admin_resources.status_code)
                     resources_body = admin_resources.json()
                     self.assertEqual(
-                        ["cases", "documents", "operation_logs", "notification_deliveries", "admin"],
+                        ["cases", "documents", "invoices", "missing_submissions", "operation_logs", "notification_deliveries", "admin"],
                         [resource["name"] for resource in resources_body["resources"]],
                     )
                     self.assertEqual("/cases", resources_body["resources"][0]["collection_path"])
@@ -606,8 +610,8 @@ class ApiTests(unittest.TestCase):
                     self.assertIn("label_field", resources_body["resources"][1])
                     self.assertEqual("case_id", resources_body["resources"][0]["detail_key"])
                     self.assertIn("default_sort", resources_body["resources"][2])
-                    self.assertIn("detail_fields", resources_body["resources"][3])
-                    self.assertEqual("notification_delivery_id", resources_body["resources"][3]["detail_key"])
+                    self.assertIn("detail_fields", resources_body["resources"][4])
+                    self.assertEqual("notification_delivery_id", resources_body["resources"][5]["detail_key"])
                     self.assertEqual("/cases/{case_id}", resources_body["resources"][0]["edit_path"])
                     self.assertEqual(
                         ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
@@ -617,16 +621,16 @@ class ApiTests(unittest.TestCase):
                         ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
                         resources_body["resources"][0]["editable_fields"],
                     )
-                    self.assertEqual(["edit", "activity"], resources_body["resources"][0]["actions"])
+                    self.assertEqual(["edit", "activity", "reprocess"], resources_body["resources"][0]["actions"])
                     self.assertEqual(["manage", "activity", "reassign", "reprocess", "delete"], resources_body["resources"][1]["actions"])
-                    self.assertEqual(["view", "summary", "trends", "alerts", "report"], resources_body["resources"][3]["actions"])
+                    self.assertEqual(["view", "summary", "trends", "alerts", "report"], resources_body["resources"][5]["actions"])
 
                     admin_react_admin = client.get("/admin/react-admin")
                     self.assertEqual(200, admin_react_admin.status_code)
                     react_admin_body = admin_react_admin.json()
                     self.assertEqual("react-admin", react_admin_body["framework"])
                     self.assertEqual(
-                        ["cases", "documents", "operation_logs", "notification_deliveries", "admin"],
+                        ["cases", "documents", "invoices", "missing_submissions", "operation_logs", "notification_deliveries", "admin"],
                         [resource["name"] for resource in react_admin_body["resources"]],
                     )
                     self.assertEqual("/cases", react_admin_body["resources"][0]["listPath"])
@@ -636,7 +640,7 @@ class ApiTests(unittest.TestCase):
                         ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
                         [field["name"] for field in react_admin_body["resources"][0]["formFields"]],
                     )
-                    self.assertEqual(["edit", "activity"], react_admin_body["resources"][0]["actions"])
+                    self.assertEqual(["edit", "activity", "reprocess"], react_admin_body["resources"][0]["actions"])
                     self.assertIn("extraction", react_admin_body["resources"][1]["fields"])
                     self.assertIn("extraction", react_admin_body["resources"][1]["detailFields"])
 
@@ -661,6 +665,11 @@ class ApiTests(unittest.TestCase):
                     self.assertIn("O's flow Admin UI", admin_ui.text)
                     self.assertIn("/admin/dashboard", admin_ui.text)
                     self.assertIn("/admin/resources", admin_ui.text)
+                    self.assertIn("LINE現場整理パック", admin_ui.text)
+                    self.assertIn("demoPackButton", admin_ui.text)
+                    self.assertIn("/admin/demo-pack", admin_ui.text)
+                    self.assertIn("/admin/missing-submissions", admin_ui.text)
+                    self.assertIn("/invoices", admin_ui.text)
                     self.assertIn("activityKind", admin_ui.text)
                     self.assertIn("supports", admin_ui.text)
                     self.assertIn("resourceSelect", admin_ui.text)
@@ -1146,6 +1155,11 @@ class ApiTests(unittest.TestCase):
                             "type": "file",
                             "fileName": "CASE-LINE-FILE-1.pdf",
                         },
+                        "contentProvider": {
+                            "type": "external",
+                            "originalContentUrl": "https://example.com/original.pdf",
+                            "previewImageUrl": "https://example.com/preview.jpg",
+                        },
                     }
                 ],
             }
@@ -1191,6 +1205,13 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(body["items"][0]["document_id"], logs[0].document_id)
                     metadata = json.loads(logs[0].metadata_json)
                     self.assertEqual("CASE-LINE-FILE-1.pdf", metadata["file_name"])
+                    self.assertEqual("external", metadata["content_provider_type"])
+                    self.assertEqual("https://example.com/original.pdf", metadata["content_provider_original_content_url"])
+                    self.assertEqual("https://example.com/preview.jpg", metadata["content_provider_preview_image_url"])
+                    self.assertEqual("application/pdf", metadata["content_type"])
+                    self.assertIn("fileName CASE-LINE-FILE-1.pdf", metadata["event_summary"])
+                    self.assertIn("contentProvider external", metadata["event_summary"])
+                    self.assertIn("content_type application/pdf", metadata["event_summary"])
             finally:
                 app.state.repository.close()
 
@@ -2487,10 +2508,14 @@ class ApiTests(unittest.TestCase):
                     {
                         "type": "message",
                         "webhookEventId": "01HZZ-PENDING-ATTN",
-                        "contentProvider": {"type": "line"},
                         "source": {"type": "user", "userId": "U-line-user-31"},
                         "replyToken": "reply-token-attn-1",
                         "deliveryContext": {"isRedelivery": True},
+                        "contentProvider": {
+                            "type": "line",
+                            "originalContentUrl": "https://example.com/line/original.mp4",
+                            "previewImageUrl": "https://example.com/line/preview.jpg",
+                        },
                         "message": {
                             "id": "video-attn-1",
                             "type": "video",
@@ -2551,6 +2576,10 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual("reply-token-attn-1", alert_body["pending_backlog_latest_summary"]["reply_token"])
                     self.assertTrue(alert_body["pending_backlog_latest_summary"]["is_redelivery"])
                     self.assertEqual("quoted-message-attn-1", alert_body["pending_backlog_latest_summary"]["quoted_message_id"])
+                    self.assertEqual("CASE-LINE-ATTN-VIDEO.mp4", alert_body["pending_backlog_latest_summary"]["file_name"])
+                    self.assertEqual("line", alert_body["pending_backlog_latest_summary"]["content_provider_type"])
+                    self.assertEqual("https://example.com/line/original.mp4", alert_body["pending_backlog_latest_summary"]["content_provider_original_content_url"])
+                    self.assertEqual("https://example.com/line/preview.jpg", alert_body["pending_backlog_latest_summary"]["content_provider_preview_image_url"])
             finally:
                 app.state.repository.close()
 
@@ -2590,7 +2619,11 @@ class ApiTests(unittest.TestCase):
                     {
                         "type": "message",
                         "webhookEventId": "01HZZ-ALERT",
-                        "contentProvider": {"type": "line"},
+                        "contentProvider": {
+                            "type": "line",
+                            "originalContentUrl": "https://example.com/original.mp4",
+                            "previewImageUrl": "https://example.com/preview.jpg",
+                        },
                         "source": {"type": "user", "userId": "U-line-user-40"},
                         "replyToken": "reply-token-1",
                         "deliveryContext": {"isRedelivery": True},
@@ -2642,6 +2675,16 @@ class ApiTests(unittest.TestCase):
                     self.assertIn("pending backlog count: 1", alerts_markdown.text)
                     self.assertIn("pending_backlog", alerts_markdown.text)
                     self.assertIn("latest pending reply_token: reply-token-1", alerts_markdown.text)
+                    self.assertIn("latest pending file_name: CASE-LINE-ALERT-1.mp4", alerts_markdown.text)
+                    self.assertIn("latest pending content_provider_type: line", alerts_markdown.text)
+                    self.assertIn(
+                        "latest pending content_provider_original_content_url: https://example.com/original.mp4",
+                        alerts_markdown.text,
+                    )
+                    self.assertIn(
+                        "latest pending content_provider_preview_image_url: https://example.com/preview.jpg",
+                        alerts_markdown.text,
+                    )
                     self.assertIn("latest pending quoted_message_id: quoted-message-1", alerts_markdown.text)
 
                     markdown_response = client.get("/line-webhooks/report.md", params={"pending_backlog_threshold": 1})
@@ -2649,8 +2692,18 @@ class ApiTests(unittest.TestCase):
                     self.assertIn("# O's flow LINE Webhook Report", markdown_response.text)
                     self.assertIn("pending backlog count: 1", markdown_response.text)
                     self.assertIn("Latest Pending", markdown_response.text)
-                    self.assertIn("reply_token: reply-token-1", markdown_response.text)
-                    self.assertIn("quoted_message_id: quoted-message-1", markdown_response.text)
+                    self.assertIn("- reply_token: reply-token-1", markdown_response.text)
+                    self.assertIn("- quoted_message_id: quoted-message-1", markdown_response.text)
+                    self.assertIn("- file_name: CASE-LINE-ALERT-1.mp4", markdown_response.text)
+                    self.assertIn("- content_provider_type: line", markdown_response.text)
+                    self.assertIn(
+                        "- content_provider_original_content_url: https://example.com/original.mp4",
+                        markdown_response.text,
+                    )
+                    self.assertIn(
+                        "file_name: CASE-LINE-ALERT-1.mp4 | content_provider_type: line",
+                        markdown_response.text,
+                    )
             finally:
                 app.state.repository.close()
 
@@ -3262,6 +3315,141 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual("spreadsheet", details.source_type)
         self.assertEqual("builtin", details.engine)
 
+    def test_extract_text_details_handles_xltx_template_workbooks(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        workbook = io.BytesIO()
+        with zipfile.ZipFile(workbook, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheets><sheet name="TemplateSheet" sheetId="1" r:id="rId1"/></sheets>
+                </workbook>""",
+            )
+            archive.writestr(
+                "xl/sharedStrings.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+                    <si><t>Template</t></si>
+                    <si><t>Workbook</t></si>
+                </sst>""",
+            )
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheetData>
+                        <row r="1">
+                            <c r="A1" t="s"><v>0</v></c>
+                            <c r="B1" t="s"><v>1</v></c>
+                        </row>
+                    </sheetData>
+                </worksheet>""",
+            )
+
+        details = extract_text_details(
+            "sample.xltx",
+            workbook.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Template Workbook", details.text)
+
+    def test_extract_text_details_handles_xltm_template_workbooks(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        workbook = io.BytesIO()
+        with zipfile.ZipFile(workbook, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheets><sheet name="MacroTemplate" sheetId="1" r:id="rId1"/></sheets>
+                </workbook>""",
+            )
+            archive.writestr(
+                "xl/sharedStrings.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+                    <si><t>Macro</t></si>
+                    <si><t>Template</t></si>
+                </sst>""",
+            )
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheetData>
+                        <row r="1">
+                            <c r="A1" t="s"><v>0</v></c>
+                            <c r="B1" t="s"><v>1</v></c>
+                        </row>
+                    </sheetData>
+                </worksheet>""",
+            )
+
+        details = extract_text_details(
+            "sample.xltm",
+            workbook.getvalue(),
+            "application/vnd.ms-excel.template.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Macro Template", details.text)
+
+    def test_extract_text_details_handles_xlam_addin_workbooks(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        workbook = io.BytesIO()
+        with zipfile.ZipFile(workbook, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheets><sheet name="AddInSheet" sheetId="1" r:id="rId1"/></sheets>
+                </workbook>""",
+            )
+            archive.writestr(
+                "xl/sharedStrings.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+                    <si><t>AddIn</t></si>
+                    <si><t>Workbook</t></si>
+                </sst>""",
+            )
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheetData>
+                        <row r="1">
+                            <c r="A1" t="s"><v>0</v></c>
+                            <c r="B1" t="s"><v>1</v></c>
+                        </row>
+                    </sheetData>
+                </worksheet>""",
+            )
+
+        details = extract_text_details(
+            "sample.xlam",
+            workbook.getvalue(),
+            "application/vnd.ms-excel.addin.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("AddIn Workbook", details.text)
+
     def test_extract_text_details_handles_ods_spreadsheets(self) -> None:
         from app.services.extraction import extract_text_details
 
@@ -3294,6 +3482,34 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual("spreadsheet", details.source_type)
         self.assertEqual("builtin", details.engine)
 
+    def test_extract_text_details_handles_fods_spreadsheets(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        document = """<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+            xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+            xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+            <office:body>
+                <office:text>
+                    <text:p>Flat</text:p>
+                    <text:p>Spreadsheet</text:p>
+                </office:text>
+            </office:body>
+        </office:document-content>""".encode("utf-8")
+
+        details = extract_text_details(
+            "sample.fods",
+            document,
+            "application/vnd.oasis.opendocument.spreadsheet-flat-xml",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Flat", details.text)
+        self.assertIn("Spreadsheet", details.text)
+
     def test_extract_text_details_handles_odt_documents(self) -> None:
         from app.services.extraction import extract_text_details
 
@@ -3325,6 +3541,488 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual("Hello\nWorld", details.text)
         self.assertEqual("odt", details.source_type)
         self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_fodt_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        document = """<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+            xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+            xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+            <office:body>
+                <office:text>
+                    <text:h>Flat Title</text:h>
+                    <text:p>Flat Body</text:p>
+                </office:text>
+            </office:body>
+        </office:document-content>""".encode("utf-8")
+
+        details = extract_text_details(
+            "sample.fodt",
+            document,
+            "application/vnd.oasis.opendocument.text-flat-xml",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("odt", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Flat Title", details.text)
+        self.assertIn("Flat Body", details.text)
+
+    def test_extract_text_details_handles_odp_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = io.BytesIO()
+        with zipfile.ZipFile(presentation, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "content.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <office:document-content
+                    xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                    xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+                    <office:body>
+                        <office:presentation>
+                            <draw:page xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0">
+                                <draw:frame>
+                                    <draw:text-box>
+                                        <text:p>Slide title</text:p>
+                                        <text:p>Bullet one</text:p>
+                                        <text:p>Bullet two</text:p>
+                                    </draw:text-box>
+                                </draw:frame>
+                            </draw:page>
+                        </office:presentation>
+                    </office:body>
+                </office:document-content>""",
+            )
+
+        details = extract_text_details(
+            "sample.odp",
+            presentation.getvalue(),
+            "application/vnd.oasis.opendocument.presentation",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertIn("Slide title", details.text)
+        self.assertIn("Bullet one", details.text)
+        self.assertIn("Bullet two", details.text)
+        self.assertEqual("odp", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_fodp_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = """<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+            xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+            xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+            <office:body>
+                <office:presentation>
+                    <draw:page xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0">
+                        <draw:frame>
+                            <draw:text-box>
+                                <text:p>Flat Slide</text:p>
+                                <text:p>Flat Bullet</text:p>
+                            </draw:text-box>
+                        </draw:frame>
+                    </draw:page>
+                </office:presentation>
+            </office:body>
+        </office:document-content>""".encode("utf-8")
+
+        details = extract_text_details(
+            "sample.fodp",
+            presentation,
+            "application/vnd.oasis.opendocument.presentation-flat-xml",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("odp", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Flat Slide", details.text)
+        self.assertIn("Flat Bullet", details.text)
+
+    def test_extract_text_details_handles_odg_graphics(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        graphics = io.BytesIO()
+        with zipfile.ZipFile(graphics, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "content.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <office:document-content
+                    xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                    xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+                    <office:body>
+                        <office:drawing>
+                            <draw:page xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0">
+                                <draw:frame>
+                                    <draw:text-box>
+                                        <text:p>Graphic title</text:p>
+                                        <text:p>Graphic caption</text:p>
+                                    </draw:text-box>
+                                </draw:frame>
+                            </draw:page>
+                        </office:drawing>
+                    </office:body>
+                </office:document-content>""",
+            )
+
+        details = extract_text_details(
+            "sample.odg",
+            graphics.getvalue(),
+            "application/vnd.oasis.opendocument.graphics",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("odg", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Graphic title", details.text)
+        self.assertIn("Graphic caption", details.text)
+
+    def test_extract_text_details_handles_fodg_graphics(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        graphics = """<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content
+            xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+            xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+            <office:body>
+                <office:drawing>
+                    <draw:page xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0">
+                        <draw:frame>
+                            <draw:text-box>
+                                <text:p>Flat Graphic</text:p>
+                                <text:p>Flat Caption</text:p>
+                            </draw:text-box>
+                        </draw:frame>
+                    </draw:page>
+                </office:drawing>
+            </office:body>
+        </office:document-content>""".encode("utf-8")
+
+        details = extract_text_details(
+            "sample.fodg",
+            graphics,
+            "application/vnd.oasis.opendocument.graphics-flat-xml",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("odg", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Flat Graphic", details.text)
+        self.assertIn("Flat Caption", details.text)
+
+    def test_extract_text_details_handles_docm_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        document = io.BytesIO()
+        with zipfile.ZipFile(document, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "word/document.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                    <w:body>
+                        <w:p><w:r><w:t>Macro document title</w:t></w:r></w:p>
+                        <w:p><w:r><w:t>Macro document body</w:t></w:r></w:p>
+                    </w:body>
+                </w:document>""",
+            )
+
+        details = extract_text_details(
+            "sample.docm",
+            document.getvalue(),
+            "application/vnd.ms-word.document.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("docx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Macro document title", details.text)
+        self.assertIn("Macro document body", details.text)
+
+    def test_extract_text_details_handles_dotm_templates(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        document = io.BytesIO()
+        with zipfile.ZipFile(document, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "word/document.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                    <w:body>
+                        <w:p><w:r><w:t>Template macro title</w:t></w:r></w:p>
+                        <w:p><w:r><w:t>Template macro body</w:t></w:r></w:p>
+                    </w:body>
+                </w:document>""",
+            )
+
+        details = extract_text_details(
+            "sample.dotm",
+            document.getvalue(),
+            "application/vnd.ms-word.template.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("docx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Template macro title", details.text)
+        self.assertIn("Template macro body", details.text)
+
+    def test_extract_text_details_handles_dotx_templates(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        document = io.BytesIO()
+        with zipfile.ZipFile(document, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "word/document.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                    <w:body>
+                        <w:p><w:r><w:t>Template title</w:t></w:r></w:p>
+                        <w:p><w:r><w:t>Template body</w:t></w:r></w:p>
+                    </w:body>
+                </w:document>""",
+            )
+
+        details = extract_text_details(
+            "sample.dotx",
+            document.getvalue(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("docx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Template title", details.text)
+        self.assertIn("Template body", details.text)
+
+    def test_extract_text_details_handles_epub_books(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        book = io.BytesIO()
+        with zipfile.ZipFile(book, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "OEBPS/chapter1.xhtml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <html xmlns="http://www.w3.org/1999/xhtml">
+                    <body>
+                        <h1>Chapter One</h1>
+                        <p>Opening paragraph</p>
+                    </body>
+                </html>""",
+            )
+            archive.writestr(
+                "OEBPS/chapter2.xhtml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <html xmlns="http://www.w3.org/1999/xhtml">
+                    <body>
+                        <h1>Chapter Two</h1>
+                        <p>Closing paragraph</p>
+                    </body>
+                </html>""",
+            )
+
+        details = extract_text_details("sample.epub", book.getvalue(), "application/epub+zip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("epub", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Chapter One", details.text)
+        self.assertIn("Opening paragraph", details.text)
+        self.assertIn("Chapter Two", details.text)
+        self.assertIn("Closing paragraph", details.text)
+
+    def test_extract_text_details_handles_pptx_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = io.BytesIO()
+        with zipfile.ZipFile(presentation, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "ppt/slides/slide1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                    <p:cSld>
+                        <p:spTree>
+                            <p:sp>
+                                <p:txBody>
+                                    <a:p><a:r><a:t>Title slide</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>Agenda item one</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>Agenda item two</a:t></a:r></a:p>
+                                </p:txBody>
+                            </p:sp>
+                        </p:spTree>
+                    </p:cSld>
+                </p:sld>""",
+            )
+
+        details = extract_text_details(
+            "sample.pptx",
+            presentation.getvalue(),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("pptx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Title slide", details.text)
+        self.assertIn("Agenda item one", details.text)
+        self.assertIn("Agenda item two", details.text)
+
+    def test_extract_text_details_handles_potx_template_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = io.BytesIO()
+        with zipfile.ZipFile(presentation, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "ppt/slides/slide1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                    <p:cSld>
+                        <p:spTree>
+                            <p:sp>
+                                <p:txBody>
+                                    <a:p><a:r><a:t>Template title</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>Template agenda</a:t></a:r></a:p>
+                                </p:txBody>
+                            </p:sp>
+                        </p:spTree>
+                    </p:cSld>
+                </p:sld>""",
+            )
+
+        details = extract_text_details(
+            "sample.potx",
+            presentation.getvalue(),
+            "application/vnd.openxmlformats-officedocument.presentationml.template",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("pptx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Template title", details.text)
+        self.assertIn("Template agenda", details.text)
+
+    def test_extract_text_details_handles_potm_template_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = io.BytesIO()
+        with zipfile.ZipFile(presentation, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "ppt/slides/slide1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                    <p:cSld>
+                        <p:spTree>
+                            <p:sp>
+                                <p:txBody>
+                                    <a:p><a:r><a:t>Macro title</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>Macro agenda</a:t></a:r></a:p>
+                                </p:txBody>
+                            </p:sp>
+                        </p:spTree>
+                    </p:cSld>
+                </p:sld>""",
+            )
+
+        details = extract_text_details(
+            "sample.potm",
+            presentation.getvalue(),
+            "application/vnd.ms-powerpoint.template.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("pptx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Macro title", details.text)
+        self.assertIn("Macro agenda", details.text)
+
+    def test_extract_text_details_handles_ppsm_slideshow_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = io.BytesIO()
+        with zipfile.ZipFile(presentation, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "ppt/slides/slide1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                    <p:cSld>
+                        <p:spTree>
+                            <p:sp>
+                                <p:txBody>
+                                    <a:p><a:r><a:t>Slideshow title</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>Slideshow agenda</a:t></a:r></a:p>
+                                </p:txBody>
+                            </p:sp>
+                        </p:spTree>
+                    </p:cSld>
+                </p:sld>""",
+            )
+
+        details = extract_text_details(
+            "sample.ppsm",
+            presentation.getvalue(),
+            "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("pptx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Slideshow title", details.text)
+        self.assertIn("Slideshow agenda", details.text)
+
+    def test_extract_text_details_handles_ppam_addin_presentations(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        presentation = io.BytesIO()
+        with zipfile.ZipFile(presentation, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "ppt/slides/slide1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                    <p:cSld>
+                        <p:spTree>
+                            <p:sp>
+                                <p:txBody>
+                                    <a:p><a:r><a:t>Add-in title</a:t></a:r></a:p>
+                                    <a:p><a:r><a:t>Add-in agenda</a:t></a:r></a:p>
+                                </p:txBody>
+                            </p:sp>
+                        </p:spTree>
+                    </p:cSld>
+                </p:sld>""",
+            )
+
+        details = extract_text_details(
+            "sample.ppam",
+            presentation.getvalue(),
+            "application/vnd.ms-powerpoint.addin.macroenabled.12",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("pptx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Add-in title", details.text)
+        self.assertIn("Add-in agenda", details.text)
 
     def test_extract_text_details_handles_xls_workbooks_when_xlrd_is_available(self) -> None:
         from app.services.extraction import extract_text_details
@@ -3382,6 +4080,10 @@ class ExtractionTests(unittest.TestCase):
             ("pyproject.toml", b"[tool.poetry]\nname = 'oflow'", "application/toml", "text"),
             ("settings.ini", b"[app]\nname = O's flow", "text/plain", "text"),
             ("notes.rst", b"Title\n=====\n\nBody", "text/x-rst", "text"),
+            ("deploy.conf", b"enabled=true\nmode=prod", "application/octet-stream", "text"),
+            ("app.properties", b"key=value\nfeature.enabled=true", "application/octet-stream", "text"),
+            ("schema.sql", b"SELECT * FROM cases;", "application/sql", "text"),
+            ("meeting.ics", b"BEGIN:VCALENDAR\nSUMMARY:Client meeting\nLOCATION:Tokyo\nEND:VCALENDAR", "text/calendar", "ics"),
         ]
 
         for filename, content, mime_type, expected_source_type in cases:
@@ -3391,6 +4093,162 @@ class ExtractionTests(unittest.TestCase):
                 assert details is not None
                 self.assertEqual(expected_source_type, details.source_type)
                 self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_subtitle_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        srt = (
+            "1\r\n"
+            "00:00:01,000 --> 00:00:02,000\r\n"
+            "Hello there\r\n"
+            "\r\n"
+            "2\r\n"
+            "00:00:03,000 --> 00:00:04,000\r\n"
+            "General Kenobi\r\n"
+        ).encode("utf-8")
+        vtt = (
+            "WEBVTT\r\n"
+            "\r\n"
+            "00:00:01.000 --> 00:00:02.000\r\n"
+            "First caption\r\n"
+            "\r\n"
+            "00:00:03.000 --> 00:00:04.000\r\n"
+            "Second caption\r\n"
+        ).encode("utf-8")
+
+        subtitle_cases = [
+            ("clip.srt", srt, "application/x-subrip", ["Hello there", "General Kenobi"]),
+            ("clip.vtt", vtt, "text/vtt", ["First caption", "Second caption"]),
+        ]
+
+        for filename, content, mime_type, expected_text in subtitle_cases:
+            with self.subTest(filename=filename, mime_type=mime_type):
+                details = extract_text_details(filename, content, mime_type)
+                self.assertIsNotNone(details)
+                assert details is not None
+                self.assertEqual("subtitle", details.source_type)
+                self.assertEqual("builtin", details.engine)
+                for snippet in expected_text:
+                    self.assertIn(snippet, details.text)
+
+    def test_extract_text_details_handles_folded_ics_lines(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        ics = (
+            "BEGIN:VCALENDAR\r\n"
+            "SUMMARY:Quarterly review\r\n"
+            "DESCRIPTION:First line\r\n"
+            " second line\r\n"
+            "LOCATION:Tokyo\r\n"
+            "END:VCALENDAR\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("schedule.ics", ics, "application/ics")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("ics", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("SUMMARY: Quarterly review", details.text)
+        self.assertIn("DESCRIPTION: First line second line", details.text)
+        self.assertIn("LOCATION: Tokyo", details.text)
+
+    def test_extract_text_details_handles_ical_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        ical = (
+            "BEGIN:VCALENDAR\r\n"
+            "SUMMARY:Planning session\r\n"
+            "DTSTART:20260705T090000Z\r\n"
+            "DTEND:20260705T100000Z\r\n"
+            "END:VCALENDAR\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("schedule.ical", ical, "application/icalendar")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("ics", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("SUMMARY: Planning session", details.text)
+        self.assertIn("DTSTART: 20260705T090000Z", details.text)
+        self.assertIn("DTEND: 20260705T100000Z", details.text)
+
+    def test_extract_text_details_handles_vcard_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        vcf = (
+            "BEGIN:VCARD\r\n"
+            "VERSION:3.0\r\n"
+            "N:Doe;Jane;;;\r\n"
+            "FN:Jane Doe\r\n"
+            "ORG:Example Inc.\r\n"
+            "TITLE:Product Manager\r\n"
+            "TEL;TYPE=CELL:+81-90-1234-5678\r\n"
+            "EMAIL:jane@example.com\r\n"
+            "ADR;TYPE=WORK:;;1-2-3 Chiyoda;Tokyo;Tokyo;100-0001;Japan\r\n"
+            "NOTE:First line\r\n"
+            " second line\r\n"
+            "URL:https://example.com\r\n"
+            "END:VCARD\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("contact.vcf", vcf, "text/vcard; charset=utf-8")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("vcf", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("FN: Jane Doe", details.text)
+        self.assertIn("N: Jane Doe", details.text)
+        self.assertIn("ORG: Example Inc.", details.text)
+        self.assertIn("TITLE: Product Manager", details.text)
+        self.assertIn("TEL: +81-90-1234-5678", details.text)
+        self.assertIn("EMAIL: jane@example.com", details.text)
+        self.assertIn("ADR: 1-2-3 Chiyoda Tokyo Tokyo 100-0001 Japan", details.text)
+        self.assertIn("NOTE: First line second line", details.text)
+        self.assertIn("URL: https://example.com", details.text)
+
+    def test_extract_text_details_unescapes_vcard_values(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        vcf = (
+            "BEGIN:VCARD\r\n"
+            "FN:Acme\\, Inc.\\nSales Team\r\n"
+            "N:Inc.;Acme\\,;Sales;;\r\n"
+            "ADR:;;1-2-3 Example\\; Tower;Tokyo;Tokyo;100-0001;Japan\r\n"
+            "END:VCARD\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("escaped.vcf", vcf, "text/vcard")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("vcf", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("FN: Acme, Inc.", details.text)
+        self.assertIn("Sales Team", details.text)
+        self.assertIn("N: Acme, Sales Inc.", details.text)
+        self.assertIn("ADR: 1-2-3 Example; Tower Tokyo Tokyo 100-0001 Japan", details.text)
+
+    def test_extract_text_details_handles_vcard_alias_extension(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        vcard = (
+            "BEGIN:VCARD\r\n"
+            "FN:Alias Example\r\n"
+            "EMAIL:alias@example.com\r\n"
+            "END:VCARD\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("contact.vcard", vcard, "application/octet-stream")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("vcf", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("FN: Alias Example", details.text)
+        self.assertIn("EMAIL: alias@example.com", details.text)
 
     def test_extract_text_details_handles_jsonl_files(self) -> None:
         from app.services.extraction import extract_text_details
@@ -3408,13 +4266,267 @@ class ExtractionTests(unittest.TestCase):
         self.assertIn('"event": "created"', details.text)
         self.assertIn('"event": "updated"', details.text)
 
+    def test_extract_text_details_handles_gzipped_csv_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        payload = gzip.compress(b"name,amount\nAlice,10\nBob,20")
+
+        details = extract_text_details("archive.csv.gz", payload, "application/gzip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("csv", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Alice 10", details.text)
+        self.assertIn("Bob 20", details.text)
+
+    def test_extract_text_details_handles_gzipped_json_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        payload = gzip.compress(b'{"event":"created","id":1}\n')
+
+        details = extract_text_details("payload.json.gz", payload, "application/gzip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("json", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn('"event": "created"', details.text)
+
+    def test_extract_text_details_handles_bzipped_text_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        payload = bz2.compress(b"Hello\nWorld")
+
+        details = extract_text_details("notes.txt.bz2", payload, "application/x-bzip2")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("text", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello", details.text)
+        self.assertIn("World", details.text)
+
+    def test_extract_text_details_handles_bzipped_json_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        payload = bz2.compress(b'{"event":"archived","id":9}\n')
+
+        details = extract_text_details("payload.json.bz2", payload, "application/x-bzip2")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("json", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn('"event": "archived"', details.text)
+
+    def test_extract_text_details_handles_xzipped_text_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        payload = lzma.compress(b"Hello\nXZ\nWorld")
+
+        details = extract_text_details("notes.txt.xz", payload, "application/x-xz")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("text", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello", details.text)
+        self.assertIn("XZ", details.text)
+        self.assertIn("World", details.text)
+
+    def test_extract_text_details_handles_lzma_json_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        payload = lzma.compress(b'{"event":"compressed","id":12}\n')
+
+        details = extract_text_details("payload.json.lzma", payload, "application/x-lzma")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("json", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn('"event": "compressed"', details.text)
+
+    def test_extract_text_details_handles_tar_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            csv_bytes = b"name,amount\nAlice,10\nBob,20"
+            csv_info = tarfile.TarInfo("nested/report.csv")
+            csv_info.size = len(csv_bytes)
+            tar.addfile(csv_info, io.BytesIO(csv_bytes))
+
+            json_bytes = b'{"event":"created","id":1}\n'
+            json_info = tarfile.TarInfo("nested/event.json")
+            json_info.size = len(json_bytes)
+            tar.addfile(json_info, io.BytesIO(json_bytes))
+
+        details = extract_text_details("bundle.tar", archive.getvalue(), "application/x-tar")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("tar", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Alice 10", details.text)
+        self.assertIn('"event": "created"', details.text)
+
+    def test_extract_text_details_handles_tar_gz_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            text_bytes = b"Hello from tar.gz"
+            text_info = tarfile.TarInfo("notes.txt")
+            text_info.size = len(text_bytes)
+            tar.addfile(text_info, io.BytesIO(text_bytes))
+
+        payload = gzip.compress(archive.getvalue())
+
+        details = extract_text_details("bundle.tar.gz", payload, "application/gzip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("tar", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from tar.gz", details.text)
+
+    def test_extract_text_details_handles_tgz_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            text_bytes = b"Hello from tgz"
+            text_info = tarfile.TarInfo("notes.txt")
+            text_info.size = len(text_bytes)
+            tar.addfile(text_info, io.BytesIO(text_bytes))
+
+        payload = gzip.compress(archive.getvalue())
+
+        details = extract_text_details("bundle.tgz", payload, "application/gzip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("tar", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from tgz", details.text)
+
+    def test_extract_text_details_handles_tbz2_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            text_bytes = b"Hello from tbz2"
+            text_info = tarfile.TarInfo("notes.txt")
+            text_info.size = len(text_bytes)
+            tar.addfile(text_info, io.BytesIO(text_bytes))
+
+        payload = bz2.compress(archive.getvalue())
+
+        details = extract_text_details("bundle.tbz2", payload, "application/x-bzip2")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("tar", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from tbz2", details.text)
+
+    def test_extract_text_details_handles_txz_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            text_bytes = b"Hello from txz"
+            text_info = tarfile.TarInfo("notes.txt")
+            text_info.size = len(text_bytes)
+            tar.addfile(text_info, io.BytesIO(text_bytes))
+
+        payload = lzma.compress(archive.getvalue())
+
+        details = extract_text_details("bundle.txz", payload, "application/x-xz")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("tar", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from txz", details.text)
+
+    def test_extract_text_details_handles_zip_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_archive:
+            zip_archive.writestr("nested/report.csv", "name,amount\nAlice,10\nBob,20")
+            zip_archive.writestr("nested/event.json", '{"event":"created","id":1}\n')
+
+        details = extract_text_details("bundle.zip", archive.getvalue(), "application/zip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("zip", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Alice 10", details.text)
+        self.assertIn('"event": "created"', details.text)
+
+    def test_extract_text_details_handles_zip_mime_without_extension(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_archive:
+            zip_archive.writestr("nested/notes.txt", "Hello from zip mime")
+
+        details = extract_text_details("bundle.unknown", archive.getvalue(), "application/zip")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("zip", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from zip mime", details.text)
+
+    def test_extract_text_details_handles_jar_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_archive:
+            zip_archive.writestr("META-INF/manifest.mf", "Manifest-Version: 1.0\n")
+            zip_archive.writestr("docs/readme.txt", "Hello from jar")
+
+        details = extract_text_details("library.jar", archive.getvalue(), "application/java-archive")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("zip", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from jar", details.text)
+
+    def test_extract_text_details_handles_war_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_archive:
+            zip_archive.writestr("WEB-INF/web.xml", "<web-app><display-name>Test App</display-name></web-app>")
+            zip_archive.writestr("notes.txt", "Hello from war")
+
+        details = extract_text_details("app.war", archive.getvalue(), "application/x-war")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("zip", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Hello from war", details.text)
+        self.assertIn("Test App", details.text)
+
     def test_extract_text_details_handles_text_like_mime_types_without_extension_hints(self) -> None:
         from app.services.extraction import extract_text_details
 
         cases = [
-            ("document.unknown", b"# Heading\n\nBody", "text/markdown"),
-            ("config.unknown", b"root: true\nname: oflow", "application/x-yaml"),
-            ("notes.unknown", b"[tool.poetry]\nname = 'oflow'", "application/toml"),
+            ("document.unknown", b"# Heading\n\nBody", "text/markdown; charset=utf-8"),
+            ("config.unknown", b"root: true\nname: oflow", "application/x-yaml; charset=utf-8"),
+            ("notes.unknown", b"[tool.poetry]\nname = 'oflow'", "application/toml; charset=utf-8"),
+            ("query.unknown", b"SELECT * FROM cases;", "application/sql; charset=utf-8"),
+            ("guide.markdown", b"# Guide\n\nBody", "application/octet-stream"),
+            ("readme.mdown", b"# Readme\n\nBody", "application/octet-stream"),
         ]
 
         for filename, content, mime_type in cases:
@@ -3424,6 +4536,43 @@ class ExtractionTests(unittest.TestCase):
                 assert details is not None
                 self.assertEqual("text", details.source_type)
                 self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_additional_plain_text_document_extensions(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        cases = [
+            ("outline.org", b"* Heading\n\nBody", "application/octet-stream"),
+            ("draft.mdx", b"# MDX Title\n\n<Custom />", "application/octet-stream"),
+            ("notes.mkdn", b"# Mkdn Title\n\nBody", "application/octet-stream"),
+            ("sheet.text", b"Plain text line one\nPlain text line two", "application/octet-stream"),
+        ]
+
+        for filename, content, mime_type in cases:
+            with self.subTest(filename=filename):
+                details = extract_text_details(filename, content, mime_type)
+                self.assertIsNotNone(details)
+                assert details is not None
+                self.assertEqual("text", details.source_type)
+                self.assertEqual("builtin", details.engine)
+                self.assertTrue(details.text)
+
+    def test_extract_text_details_handles_additional_plain_text_document_aliases(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        cases = [
+            ("article.asciidoc", b"= Title\n\nBody", "application/octet-stream"),
+            ("style.textile", b"h1. Title\n\nBody", "application/octet-stream"),
+            ("wiki.wiki", b"= Title =\n\nBody", "application/octet-stream"),
+        ]
+
+        for filename, content, mime_type in cases:
+            with self.subTest(filename=filename):
+                details = extract_text_details(filename, content, mime_type)
+                self.assertIsNotNone(details)
+                assert details is not None
+                self.assertEqual("text", details.source_type)
+                self.assertEqual("builtin", details.engine)
+                self.assertTrue(details.text)
 
     def test_extract_text_details_handles_rtf_documents(self) -> None:
         from app.services.extraction import extract_text_details
@@ -3446,6 +4595,47 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual("Hello World", details.text)
         self.assertEqual("xml", details.source_type)
         self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_svg_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        svg = (
+            b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+            b"<title>Project logo</title><desc>Internal mark</desc>"
+            b"<text x='10' y='20'>O's flow</text>"
+            b"</svg>"
+        )
+
+        details = extract_text_details("logo.svg", svg, "image/svg+xml")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("xml", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Project logo", details.text)
+        self.assertIn("Internal mark", details.text)
+        self.assertIn("O's flow", details.text)
+
+    def test_extract_text_details_handles_svgz_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        svg = (
+            b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+            b"<title>Compressed logo</title><desc>Compressed internal mark</desc>"
+            b"<text x='10' y='20'>SVGZ mark</text>"
+            b"</svg>"
+        )
+        svgz = gzip.compress(svg)
+
+        details = extract_text_details("logo.svgz", svgz, "image/svg+xml")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("xml", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Compressed logo", details.text)
+        self.assertIn("Compressed internal mark", details.text)
+        self.assertIn("SVGZ mark", details.text)
 
     def test_extract_text_details_handles_eml_messages(self) -> None:
         from app.services.extraction import extract_text_details
@@ -3477,6 +4667,86 @@ class ExtractionTests(unittest.TestCase):
         )
         self.assertEqual("eml", details.source_type)
         self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_mhtml_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        mhtml = (
+            "From: sender@example.com\r\n"
+            "Subject: Saved page\r\n"
+            'Content-Type: multipart/related; boundary="boundary"; type="text/html"\r\n'
+            "\r\n"
+            "--boundary\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            "\r\n"
+            "<html><body><p>Saved page</p><p>Second line</p></body></html>\r\n"
+            "--boundary--\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("archive.mhtml", mhtml, "multipart/related")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("mhtml", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Subject: Saved page", details.text)
+        self.assertIn("From: sender@example.com", details.text)
+        self.assertIn("Saved page", details.text)
+        self.assertIn("Second line", details.text)
+
+    def test_extract_text_details_handles_emlx_messages(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        emlx = (
+            "245\r\n"
+            "From: sender@example.com\r\n"
+            "To: receiver@example.com\r\n"
+            "Subject: Apple Mail message\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            "\r\n"
+            "Apple Mail body\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("sample.emlx", emlx, "message/x-emlx")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("emlx", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Subject: Apple Mail message", details.text)
+        self.assertIn("From: sender@example.com", details.text)
+        self.assertIn("To: receiver@example.com", details.text)
+        self.assertIn("Apple Mail body", details.text)
+
+    def test_extract_text_details_handles_mbox_archives(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        mbox = (
+            "From sender@example.com Sat Jul  5 09:00:00 2026\r\n"
+            "Subject: First archive message\r\n"
+            "From: sender@example.com\r\n"
+            "To: receiver@example.com\r\n"
+            "\r\n"
+            "First body\r\n"
+            "\r\n"
+            "From sender2@example.com Sat Jul  5 10:00:00 2026\r\n"
+            "Subject: Second archive message\r\n"
+            "From: sender2@example.com\r\n"
+            "To: receiver2@example.com\r\n"
+            "\r\n"
+            "Second body\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("archive.mbox", mbox, "application/mbox")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("mbox", details.source_type)
+        self.assertEqual("builtin", details.engine)
+        self.assertIn("Subject: First archive message", details.text)
+        self.assertIn("Subject: Second archive message", details.text)
+        self.assertIn("First body", details.text)
+        self.assertIn("Second body", details.text)
 
     def test_extract_text_details_handles_msg_messages_when_extract_msg_is_available(self) -> None:
         from app.services.extraction import extract_text_details
@@ -4049,3 +5319,6 @@ class ApiReprocessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import html
+import gzip
+import bz2
+import lzma
 import csv
+import tarfile
 import email
 import email.policy
 import json
@@ -22,9 +26,12 @@ _PDF_STRING_RE = re.compile(r"\((?:\\.|[^()])*\)")
 _IMAGE_EXTENSIONS = {".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 _TEXT_LIKE_MIME_TYPES = {
     "application/toml",
+    "application/sql",
+    "application/x-sql",
     "application/x-yaml",
     "text/markdown",
     "text/x-markdown",
+    "text/x-sql",
     "text/x-rst",
     "text/x-yaml",
     "text/yaml",
@@ -70,54 +77,173 @@ def extract_text(filename: str, content: bytes, mime_type: str | None = None) ->
 def extract_text_details(filename: str, content: bytes, mime_type: str | None = None) -> ExtractionDetails | None:
     extension = Path(filename).suffix.lower()
     mime_type = (mime_type or "").lower()
+    normalized_mime_type = mime_type.split(";", 1)[0].strip()
 
-    if extension == ".rtf" or "rtf" in mime_type:
+    if extension == ".rtf" or "rtf" in normalized_mime_type:
         text = _extract_rtf_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="rtf", engine="builtin")
 
-    if extension == ".ods" or "opendocument.spreadsheet" in mime_type:
+    if extension == ".fods" or "opendocument.spreadsheet-flat-xml" in normalized_mime_type:
+        text = _extract_flat_opendocument_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="spreadsheet", engine="builtin")
+
+    if extension == ".fodt" or "opendocument.text-flat-xml" in normalized_mime_type:
+        text = _extract_flat_opendocument_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="odt", engine="builtin")
+
+    if extension == ".fodp" or "opendocument.presentation-flat-xml" in normalized_mime_type:
+        text = _extract_flat_opendocument_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="odp", engine="builtin")
+
+    if extension == ".fodg" or "opendocument.graphics-flat-xml" in normalized_mime_type:
+        text = _extract_flat_opendocument_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="odg", engine="builtin")
+
+    if extension == ".ods" or "opendocument.spreadsheet" in normalized_mime_type:
         text = _extract_ods_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="spreadsheet", engine="builtin")
 
-    if extension == ".odt" or "opendocument.text" in mime_type:
+    if extension == ".odt" or "opendocument.text" in normalized_mime_type:
         text = _extract_odt_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="odt", engine="builtin")
 
-    if extension == ".xls" or mime_type in {"application/vnd.ms-excel", "application/msexcel"}:
+    if extension == ".odp" or "opendocument.presentation" in normalized_mime_type:
+        text = _extract_odp_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="odp", engine="builtin")
+
+    if extension == ".odg" or "opendocument.graphics" in normalized_mime_type:
+        text = _extract_odg_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="odg", engine="builtin")
+
+    if extension == ".xls" or normalized_mime_type in {"application/vnd.ms-excel", "application/msexcel"}:
         text = _extract_xls_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="spreadsheet", engine="xlrd")
 
-    if extension in {".xlsx", ".xlsm"} or "sheet" in mime_type or "excel" in mime_type:
+    if extension in {".xlsx", ".xlsm", ".xltx", ".xltm", ".xlam"} or "sheet" in normalized_mime_type or "excel" in normalized_mime_type:
         text = _extract_xlsx_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="spreadsheet", engine="builtin")
 
-    if extension in {".xml", ".xhtml"} or mime_type in {"application/xml", "text/xml"} or mime_type.endswith("+xml"):
+    if extension == ".svgz":
+        text = _extract_svgz_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="xml", engine="builtin")
+
+    if extension in {".gz", ".gzip"}:
+        text = _extract_gzipped_text(filename, content, normalized_mime_type)
+        return None if text is None else text
+
+    if extension in {".bz2", ".bzip2"}:
+        text = _extract_bzipped_text(filename, content, normalized_mime_type)
+        return None if text is None else text
+
+    if extension in {".xz", ".lzma", ".lz"}:
+        text = _extract_lzma_text(filename, content, normalized_mime_type)
+        return None if text is None else text
+
+    if extension in {".tar", ".tgz", ".tbz", ".tbz2", ".txz"}:
+        text = _extract_tar_text(filename, content, normalized_mime_type, tar_alias=extension != ".tar")
+        return None if text is None else text
+
+    if extension in {".zip", ".jar", ".war", ".ear"} or normalized_mime_type in {
+        "application/zip",
+        "application/java-archive",
+        "application/x-java-archive",
+        "application/x-jar",
+        "application/x-war",
+        "application/x-ear",
+    }:
+        text = _extract_zip_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="zip", engine="builtin")
+
+    if extension in {".xml", ".xhtml", ".svg"} or normalized_mime_type in {"application/xml", "text/xml"} or normalized_mime_type.endswith("+xml"):
         text = _extract_xml_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="xml", engine="builtin")
 
-    if extension == ".eml" or "message/rfc822" in mime_type or "email" in mime_type:
+    if extension == ".eml" or "message/rfc822" in normalized_mime_type or "email" in normalized_mime_type:
         text = _extract_eml_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="eml", engine="builtin")
 
-    if extension == ".msg" or "vnd.ms-outlook" in mime_type or "ms-outlook" in mime_type:
+    if extension == ".msg" or "vnd.ms-outlook" in normalized_mime_type or "ms-outlook" in normalized_mime_type:
         text = _extract_msg_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="msg", engine="extract_msg")
 
-    if extension in {".csv", ".tsv"} or "csv" in mime_type or "tsv" in mime_type:
-        delimiter = "\t" if extension == ".tsv" or "tsv" in mime_type else ","
+    if extension == ".epub" or normalized_mime_type == "application/epub+zip":
+        text = _extract_epub_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="epub", engine="builtin")
+
+    if extension in {".pptx", ".pptm", ".ppsx", ".potx", ".potm", ".ppam", ".ppsm"} or normalized_mime_type in {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+        "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+        "application/vnd.openxmlformats-officedocument.presentationml.template",
+        "application/vnd.ms-powerpoint.template.macroenabled.12",
+        "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
+        "application/vnd.ms-powerpoint.addin.macroenabled.12",
+    }:
+        text = _extract_pptx_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="pptx", engine="builtin")
+
+    if extension == ".emlx" or normalized_mime_type == "message/x-emlx":
+        text = _extract_emlx_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="emlx", engine="builtin")
+
+    if extension == ".mbox" or normalized_mime_type in {
+        "application/mbox",
+        "application/x-mbox",
+        "text/mbox",
+        "text/x-mbox",
+    }:
+        text = _extract_mbox_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="mbox", engine="builtin")
+
+    if extension in {".mht", ".mhtml"} or normalized_mime_type in {
+        "multipart/related",
+        "multipart/alternative",
+    }:
+        text = _extract_mhtml_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="mhtml", engine="builtin")
+
+    if extension in {".ics", ".ical"} or normalized_mime_type in {
+        "application/ics",
+        "application/icalendar",
+        "text/calendar",
+        "text/x-vcalendar",
+    }:
+        text = _extract_ics_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="ics", engine="builtin")
+
+    if extension in {".vcf", ".vcard"} or normalized_mime_type in {
+        "application/vcard",
+        "application/x-vcard",
+        "text/directory",
+        "text/vcard",
+        "text/x-vcard",
+    }:
+        text = _extract_vcard_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="vcf", engine="builtin")
+
+    if extension in {".srt", ".vtt"} or normalized_mime_type in {
+        "application/x-subrip",
+        "text/vtt",
+        "video/vtt",
+    }:
+        text = _extract_subtitle_text(content)
+        return None if text is None else ExtractionDetails(text=text, source_type="subtitle", engine="builtin")
+
+    if extension in {".csv", ".tsv"} or "csv" in normalized_mime_type or "tsv" in normalized_mime_type:
+        delimiter = "\t" if extension == ".tsv" or "tsv" in normalized_mime_type else ","
         text = _extract_delimited_text(content, delimiter=delimiter)
         source_type = "tsv" if delimiter == "\t" else "csv"
         return None if text is None else ExtractionDetails(text=text, source_type=source_type, engine="builtin")
 
-    if extension in {".html", ".htm"} or "html" in mime_type:
+    if extension in {".html", ".htm"} or "html" in normalized_mime_type:
         text = _extract_html_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="html", engine="builtin")
 
-    if _is_text_like(extension, mime_type):
+    if _is_text_like(extension, normalized_mime_type):
         text = _decode_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="text", engine="builtin")
 
-    if extension in {".jsonl", ".ndjson"} or mime_type in {
+    if extension in {".jsonl", ".ndjson"} or normalized_mime_type in {
         "application/jsonl",
         "application/ndjson",
         "application/x-ndjson",
@@ -126,19 +252,19 @@ def extract_text_details(filename: str, content: bytes, mime_type: str | None = 
         text = _extract_json_lines_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="jsonl", engine="builtin")
 
-    if extension == ".json" or "json" in mime_type:
+    if extension == ".json" or "json" in normalized_mime_type:
         text = _extract_json_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="json", engine="builtin")
 
-    if extension == ".docx" or mime_type.endswith("wordprocessingml.document"):
+    if extension in {".docx", ".docm", ".dotx", ".dotm"} or normalized_mime_type.endswith("wordprocessingml.document"):
         text = _extract_docx_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="docx", engine="builtin")
 
-    if _is_image(extension, mime_type):
+    if _is_image(extension, normalized_mime_type):
         text = _extract_image_text(content)
         return None if text is None else ExtractionDetails(text=text, source_type="image", engine="pytesseract")
 
-    if extension == ".pdf" or mime_type == "application/pdf":
+    if extension == ".pdf" or normalized_mime_type == "application/pdf":
         return _extract_pdf_text_details(content)
 
     return None
@@ -148,8 +274,17 @@ def _is_text_like(extension: str, mime_type: str) -> bool:
     return extension in {
         ".txt",
         ".md",
+        ".markdown",
+        ".mdown",
+        ".mdx",
+        ".mkdn",
         ".rst",
         ".adoc",
+        ".asciidoc",
+        ".org",
+        ".textile",
+        ".wiki",
+        ".text",
         ".csv",
         ".log",
         ".tsv",
@@ -159,6 +294,13 @@ def _is_text_like(extension: str, mime_type: str) -> bool:
         ".ini",
         ".cfg",
         ".env",
+        ".conf",
+        ".properties",
+        ".sql",
+        ".sh",
+        ".ps1",
+        ".bat",
+        ".cmd",
     } or mime_type.startswith("text/") or mime_type in _TEXT_LIKE_MIME_TYPES
 
 
@@ -186,6 +328,158 @@ def _extract_html_text(content: bytes) -> str | None:
     cleaned = html.unescape(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned or None
+
+
+def _extract_ics_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
+    lines = raw_text.splitlines()
+    unfolded_lines: list[str] = []
+    for line in lines:
+        if line.startswith((" ", "\t")) and unfolded_lines:
+            unfolded_lines[-1] += " " + line.lstrip()
+        else:
+            unfolded_lines.append(line)
+    key_fields = {
+        "SUMMARY",
+        "DTSTART",
+        "DTEND",
+        "LOCATION",
+        "DESCRIPTION",
+        "ORGANIZER",
+        "ATTENDEE",
+    }
+    chunks: list[str] = []
+    for line in unfolded_lines:
+        if ":" not in line:
+            continue
+        key_part, value = line.split(":", 1)
+        key = key_part.split(";", 1)[0].strip().upper()
+        value = value.strip()
+        if not value:
+            continue
+        if key in key_fields:
+            chunks.append(f"{key}: {value}")
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+    return cleaned or raw_text.strip() or None
+
+
+def _extract_vcard_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
+    lines = raw_text.splitlines()
+    unfolded_lines: list[str] = []
+    for line in lines:
+        if line.startswith((" ", "\t")) and unfolded_lines:
+            unfolded_lines[-1] += " " + line.lstrip()
+        else:
+            unfolded_lines.append(line)
+
+    field_order = ("FN", "N", "ORG", "TITLE", "TEL", "EMAIL", "ADR", "URL", "NOTE", "BDAY")
+    grouped_values: dict[str, list[str]] = {field: [] for field in field_order}
+    saw_vcard_marker = False
+
+    for line in unfolded_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        if upper == "BEGIN:VCARD" or upper == "END:VCARD":
+            saw_vcard_marker = True
+            continue
+        if ":" not in line:
+            continue
+        key_part, value = line.split(":", 1)
+        key = key_part.split(";", 1)[0].strip().upper()
+        value = value.strip()
+        if not value or key not in grouped_values:
+            continue
+        formatted_value = _format_vcard_value(key, value)
+        if formatted_value:
+            grouped_values[key].append(formatted_value)
+            saw_vcard_marker = True
+
+    chunks: list[str] = []
+    for field in field_order:
+        for value in grouped_values[field]:
+            chunks.append(f"{field}: {value}")
+
+    if chunks:
+        cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+        return cleaned or raw_text.strip() or None
+
+    if saw_vcard_marker:
+        cleaned = _normalize_extracted_text(raw_text, preserve_newlines=True)
+        return cleaned or raw_text.strip() or None
+
+    return None
+
+
+def _extract_subtitle_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
+    chunks: list[str] = []
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.upper() == "WEBVTT":
+            continue
+        if re.fullmatch(r"\d+", stripped):
+            continue
+        if "-->" in stripped:
+            continue
+        if stripped.startswith(("NOTE", "STYLE", "REGION")):
+            continue
+        chunks.append(stripped)
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+    return cleaned or raw_text.strip() or None
+
+
+def _format_vcard_value(field: str, value: str) -> str:
+    if field == "N":
+        parts = [part.strip() for part in _split_vcard_components(value)]
+        display_parts = [part for part in (parts[3], parts[1], parts[2], parts[0], parts[4]) if part]
+        return " ".join(display_parts) if display_parts else value
+    if field == "ADR":
+        parts = [part.strip() for part in _split_vcard_components(value)]
+        display_parts = [part for part in parts if part]
+        return " ".join(display_parts) if display_parts else value
+    return _unescape_vcard_text(value)
+
+
+def _split_vcard_components(value: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in value:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == ";":
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    parts.append("".join(current))
+    return [_unescape_vcard_text(part) for part in parts]
+
+
+def _unescape_vcard_text(value: str) -> str:
+    return (
+        value.replace(r"\\", "\\")
+        .replace(r"\n", "\n")
+        .replace(r"\N", "\n")
+        .replace(r"\,", ",")
+        .replace(r"\;", ";")
+    )
 
 
 def _extract_rtf_text(content: bytes) -> str | None:
@@ -218,6 +512,113 @@ def _extract_xml_text(content: bytes) -> str | None:
     return cleaned or None
 
 
+def _extract_svgz_text(content: bytes) -> str | None:
+    try:
+        svg_bytes = gzip.decompress(content)
+    except Exception:
+        return None
+    return _extract_xml_text(svg_bytes)
+
+
+def _extract_gzipped_text(filename: str, content: bytes, mime_type: str) -> ExtractionDetails | None:
+    try:
+        raw_content = gzip.decompress(content)
+    except Exception:
+        return None
+
+    inner_filename = Path(filename).with_suffix("").name
+    if inner_filename == filename:
+        return None
+    return extract_text_details(inner_filename, raw_content, mime_type)
+
+
+def _extract_bzipped_text(filename: str, content: bytes, mime_type: str) -> ExtractionDetails | None:
+    try:
+        raw_content = bz2.decompress(content)
+    except Exception:
+        return None
+
+    inner_filename = Path(filename).with_suffix("").name
+    if inner_filename == filename:
+        return None
+    return extract_text_details(inner_filename, raw_content, mime_type)
+
+
+def _extract_lzma_text(filename: str, content: bytes, mime_type: str) -> ExtractionDetails | None:
+    try:
+        raw_content = lzma.decompress(content)
+    except Exception:
+        return None
+
+    inner_filename = Path(filename).with_suffix("").name
+    if inner_filename == filename:
+        return None
+    return extract_text_details(inner_filename, raw_content, mime_type)
+
+
+def _extract_tar_text(
+    filename: str,
+    content: bytes,
+    mime_type: str,
+    tar_alias: bool = False,
+) -> ExtractionDetails | None:
+    try:
+        with tarfile.open(fileobj=BytesIO(content), mode="r:*") as archive:
+            chunks: list[str] = []
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                try:
+                    fileobj = archive.extractfile(member)
+                except Exception:
+                    continue
+                if fileobj is None:
+                    continue
+                try:
+                    member_content = fileobj.read()
+                except Exception:
+                    continue
+                member_name = Path(member.name).name
+                if not member_name:
+                    continue
+                details = extract_text_details(member_name, member_content, mime_type)
+                if details and details.text.strip():
+                    chunks.append(details.text)
+    except Exception:
+        return None
+
+    cleaned = _normalize_extracted_text("\n\n".join(chunks), preserve_newlines=True)
+    if not cleaned:
+        return None
+    return ExtractionDetails(text=cleaned, source_type="tar", engine="builtin")
+
+
+def _extract_zip_text(content: bytes) -> str | None:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            chunks: list[str] = []
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                try:
+                    member_content = archive.read(member)
+                except Exception:
+                    continue
+                member_name = Path(member.filename).name
+                if not member_name:
+                    continue
+                details = extract_text_details(member_name, member_content, None)
+                if details and details.text.strip():
+                    chunks.append(details.text)
+    except Exception:
+        return None
+
+    cleaned = _normalize_extracted_text("\n\n".join(chunks), preserve_newlines=True)
+    if not cleaned:
+        return None
+    return cleaned
+
+
 def _extract_xlsx_text(content: bytes) -> str | None:
     try:
         with zipfile.ZipFile(BytesIO(content)) as archive:
@@ -239,11 +640,43 @@ def _extract_xlsx_text(content: bytes) -> str | None:
     return cleaned or None
 
 
+def _extract_pptx_text(content: bytes) -> str | None:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            slide_names = [
+                name
+                for name in archive.namelist()
+                if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+            ]
+            chunks: list[str] = []
+            for slide_name in sorted(slide_names):
+                try:
+                    slide_xml = archive.read(slide_name)
+                except Exception:
+                    continue
+                slide_text = _extract_pptx_slide_text(slide_xml)
+                if slide_text:
+                    chunks.append(slide_text)
+    except Exception:
+        return None
+
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+    return cleaned or None
+
+
 def _extract_ods_text(content: bytes) -> str | None:
     return _extract_opendocument_text(content)
 
 
 def _extract_odt_text(content: bytes) -> str | None:
+    return _extract_opendocument_text(content)
+
+
+def _extract_odp_text(content: bytes) -> str | None:
+    return _extract_opendocument_text(content)
+
+
+def _extract_odg_text(content: bytes) -> str | None:
     return _extract_opendocument_text(content)
 
 
@@ -254,8 +687,19 @@ def _extract_opendocument_text(content: bytes) -> str | None:
     except Exception:
         return None
 
+    return _extract_opendocument_xml_text(xml_bytes)
+
+
+def _extract_flat_opendocument_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
+    return _extract_opendocument_xml_text(raw_text)
+
+
+def _extract_opendocument_xml_text(xml_text: str | bytes) -> str | None:
     try:
-        root = ET.fromstring(xml_bytes)
+        root = ET.fromstring(xml_text)
     except ET.ParseError:
         return None
 
@@ -269,12 +713,40 @@ def _extract_opendocument_text(content: bytes) -> str | None:
         tag = getattr(node, "tag", "")
         if not isinstance(tag, str):
             continue
-        if not (tag == f"{{{text_namespace}}}p" or tag == f"{{{text_namespace}}}h"):
+        if not (
+            tag == f"{{{text_namespace}}}p"
+            or tag == f"{{{text_namespace}}}h"
+            or tag == f"{{{text_namespace}}}span"
+        ):
             continue
         node_text = "".join(part.strip() for part in node.itertext() if part and part.strip())
         if node_text:
             rows.append(node_text)
     cleaned = _normalize_extracted_text("\n".join(rows), preserve_newlines=True)
+    return cleaned or None
+
+
+def _extract_epub_text(content: bytes) -> str | None:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            html_names = [
+                name
+                for name in archive.namelist()
+                if name.lower().endswith((".xhtml", ".html", ".htm"))
+            ]
+            chunks: list[str] = []
+            for html_name in sorted(html_names):
+                try:
+                    html_bytes = archive.read(html_name)
+                except Exception:
+                    continue
+                html_text = _extract_html_text(html_bytes)
+                if html_text:
+                    chunks.append(html_text)
+    except Exception:
+        return None
+
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
     return cleaned or None
 
 
@@ -374,46 +846,87 @@ def _extract_xlsx_sheet_text(sheet_xml: bytes, shared_strings: list[str]) -> str
     return cleaned or None
 
 
+def _extract_pptx_slide_text(slide_xml: bytes) -> str | None:
+    try:
+        root = ET.fromstring(slide_xml)
+    except ET.ParseError:
+        return None
+
+    namespace = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+    rows: list[str] = []
+    for paragraph in root.findall(f".//{namespace}p"):
+        text_parts = [node.text or "" for node in paragraph.findall(f".//{namespace}t")]
+        paragraph_text = "".join(text_parts).strip()
+        if paragraph_text:
+            rows.append(paragraph_text)
+    cleaned = _normalize_extracted_text("\n".join(rows), preserve_newlines=True)
+    return cleaned or None
+
+
 def _extract_eml_text(content: bytes) -> str | None:
     try:
         message = email.message_from_bytes(content, policy=email.policy.default)
     except Exception:
         return None
+    return _extract_email_message_text(message)
+
+
+def _extract_mhtml_text(content: bytes) -> str | None:
+    raw_text = _extract_eml_text(content)
+    if raw_text is None:
+        raw_text = _decode_text(content)
+        if raw_text is None:
+            return None
+        cleaned = _extract_html_payload_text(raw_text)
+        return cleaned or raw_text.strip() or None
+    return raw_text
+
+
+def _extract_emlx_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
+    lines = raw_text.splitlines()
+    if lines and re.fullmatch(r"\d+", lines[0].strip()):
+        raw_text = "\n".join(lines[1:])
+    try:
+        message = email.message_from_string(raw_text, policy=email.policy.default)
+    except Exception:
+        return None
+    return _extract_email_message_text(message)
+
+
+def _extract_mbox_text(content: bytes) -> str | None:
+    raw_text = _decode_text(content)
+    if raw_text is None:
+        return None
 
     chunks: list[str] = []
-    subject = str(message.get("subject") or "").strip()
-    if subject:
-        chunks.append(f"Subject: {subject}")
-    header_fields = ("from", "to", "cc", "date")
-    for header_name in header_fields:
-        header_value = str(message.get(header_name) or "").strip()
-        if header_value:
-            chunks.append(f"{header_name.title()}: {header_value}")
-    for part in message.walk():
-        content_type = (part.get_content_type() or "").lower()
-        if part.is_multipart():
-            continue
-        if content_type == "text/plain":
-            try:
-                payload = part.get_content()
-            except Exception:
-                payload = part.get_payload(decode=True)
-                if isinstance(payload, bytes):
-                    payload = _decode_text(payload)
-            if isinstance(payload, str) and payload.strip():
-                chunks.append(payload)
-        elif content_type == "text/html" and not chunks:
-            try:
-                payload = part.get_content()
-            except Exception:
-                payload = part.get_payload(decode=True)
-                if isinstance(payload, bytes):
-                    payload = _decode_text(payload)
-            if isinstance(payload, str) and payload.strip():
-                chunks.append(_extract_html_payload_text(payload))
+    current_lines: list[str] = []
+    saw_message = False
+    for line in raw_text.splitlines():
+        if line.startswith("From ") and current_lines:
+            message_text = _extract_single_email_message_text("\n".join(current_lines))
+            if message_text:
+                chunks.append(message_text)
+                saw_message = True
+            current_lines = []
+        current_lines.append(line)
 
-    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
-    return cleaned or None
+    if current_lines:
+        message_text = _extract_single_email_message_text("\n".join(current_lines))
+        if message_text:
+            chunks.append(message_text)
+            saw_message = True
+
+    if chunks:
+        cleaned = _normalize_extracted_text("\n\n".join(chunks), preserve_newlines=True)
+        return cleaned or raw_text.strip() or None
+
+    if saw_message:
+        return raw_text.strip() or None
+
+    return None
 
 
 def _extract_msg_text(content: bytes) -> str | None:
@@ -482,6 +995,58 @@ def _extract_delimited_text(content: bytes, *, delimiter: str) -> str | None:
 def _extract_html_payload_text(value: str) -> str:
     extracted = _extract_html_text(value.encode("utf-8"))
     return extracted or value
+
+
+def _extract_single_email_message_text(raw_message_text: str) -> str | None:
+    lines = raw_message_text.splitlines()
+    if lines and lines[0].startswith("From "):
+        raw_message_text = "\n".join(lines[1:])
+    try:
+        message = email.message_from_string(raw_message_text, policy=email.policy.default)
+    except Exception:
+        return None
+
+    return _extract_email_message_text(message)
+
+
+def _extract_email_message_text(message: email.message.Message) -> str | None:
+    chunks: list[str] = []
+    has_body_text = False
+    subject = str(message.get("subject") or "").strip()
+    if subject:
+        chunks.append(f"Subject: {subject}")
+    header_fields = ("from", "to", "cc", "date")
+    for header_name in header_fields:
+        header_value = str(message.get(header_name) or "").strip()
+        if header_value:
+            chunks.append(f"{header_name.title()}: {header_value}")
+    for part in message.walk():
+        content_type = (part.get_content_type() or "").lower()
+        if part.is_multipart():
+            continue
+        if content_type == "text/plain":
+            try:
+                payload = part.get_content()
+            except Exception:
+                payload = part.get_payload(decode=True)
+                if isinstance(payload, bytes):
+                    payload = _decode_text(payload)
+            if isinstance(payload, str) and payload.strip():
+                chunks.append(payload)
+                has_body_text = True
+        elif content_type == "text/html" and not has_body_text:
+            try:
+                payload = part.get_content()
+            except Exception:
+                payload = part.get_payload(decode=True)
+                if isinstance(payload, bytes):
+                    payload = _decode_text(payload)
+            if isinstance(payload, str) and payload.strip():
+                chunks.append(_extract_html_payload_text(payload))
+                has_body_text = True
+
+    cleaned = _normalize_extracted_text("\n".join(chunks), preserve_newlines=True)
+    return cleaned or None
 
 
 def _extract_json_text(content: bytes) -> str | None:
@@ -630,6 +1195,7 @@ def _extract_pdf_text_details(content: bytes) -> ExtractionDetails | None:
     if extracted is not None:
         return ExtractionDetails(text=extracted, source_type="pdf", engine="pdfplumber")
 
+    # OCR is the next best route for scanned PDFs or image-only pages.
     extracted = _extract_pdf_text_with_ocr(content)
     if extracted is not None:
         return ExtractionDetails(text=extracted, source_type="pdf", engine="pdf2image+pytesseract")

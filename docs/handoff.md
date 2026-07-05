@@ -1,4 +1,4 @@
-# O's flow V2 Handoff
+﻿# O's flow V2 Handoff
 
 ## What This Project Is
 
@@ -50,6 +50,8 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `app/api/main.py` exposes `/admin` as a lightweight HTML admin landing page.
 - `app/api/main.py` exposes `/admin/resources` as a compact admin resource manifest with fields, form metadata, sort order, supported operations, supported actions, detail keys, editable case metadata, and the standard `/cases` list path.
 - `app/api/main.py` exposes `/admin/ui` as a lightweight browser-facing admin UI shell with browsable resource data, resource details, a resource action bar, a simple case editor backed by `PATCH /cases/{case_id}`, document actions for reassign/reprocess/delete, notification summary/trends/alerts/report views, and case list filters for due date, invoice state, and output state.
+- `app/api/main.py` now also exposes `/admin/invoices`, `/admin/missing-submissions`, and `/admin/demo-pack` so the admin surface can review cases, documents, invoices, and submission gaps as one minimal pack.
+- `app/services/demo_pack.py` seeds the LINE迴ｾ蝣ｴ謨ｴ逅・ヱ繝・け demo flow and builds the admin guide / missing-submissions payloads used by the new demo pack surface.
 - `app/api/main.py` now also exposes detail endpoints for operation logs and notification deliveries so the admin browser can open the selected row.
 - `app/mcp/http.py` now drains queued subscription-change events through `GET /mcp` as SSE lines before the keep-alive comment.
 - `app/api/main.py` now queues case, document, and ingestion resource-change notifications into the MCP transport after successful mutations.
@@ -132,7 +134,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 
 - Dedicated Discord and LINE connector routes now exist in the new `app/` package, while the shared chat-ingestion API remains the shared ledger entrypoint.
 - LINE media events can fall back to the `LINE-INBOX` triage case when they do not include a case code in text or filename.
-- Common config and documentation text formats such as `.toml`, `.ini`, `.cfg`, `.env`, `.rst`, and `.adoc` are also treated as text-like for extraction.
+- Common config and documentation text formats such as `.toml`, `.ini`, `.cfg`, `.env`, `.conf`, `.properties`, `.sql`, `.rst`, `.adoc`, `.asciidoc`, `.markdown`, `.mdown`, `.mdx`, `.mkdn`, `.org`, `.textile`, `.wiki`, `.text`, `.ics`, `.ical`, `.odp`, `.odg`, `.fodp`, `.fodg`, `.fodt`, `.fods`, `.pptx`, `.potx`, `.potm`, `.ppam`, `.ppsm`, `.xltx`, `.xltm`, `.xlam`, `.docm`, `.dotx`, `.dotm`, `.epub`, `.emlx`, `.mht`, `.mhtml`, `.mbox`, `.svg`, `.svgz`, and gzipped / bzipped / xz-compressed / tar-wrapped / ZIP-family text such as `.csv.gz` / `.json.gz` / `.txt.bz2` / `.txt.xz` / `.tar` / `.tgz` / `.tbz2` / `.txz` / `.zip` / `.jar` / `.war` / `.ear` are treated as text-like for extraction, while `.vcf` / `.vcard` contact cards are normalized into searchable contact fields, `.srt` / `.vtt` subtitle files are normalized into searchable caption text, and SQL MIME types are treated as plain text too.
 - LINE sticker and location events are stored as simple text snapshots in the inbox bucket so they remain searchable.
 - LINE sticker and location events now also keep structured sticker/location metadata in operation logs for easier filtering and audit.
 - LINE follow-style non-message events are stored as JSON snapshots in the inbox bucket so contact events are preserved too.
@@ -143,6 +145,14 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - LINE message webhook logs also preserve reply tokens, redelivery flags, and quoted message IDs so retry and reply diagnostics stay visible.
 - `/line-webhooks/activity` and `/line-webhooks/pending` now surface the same LINE webhook helper metadata so operators can inspect reply and retry context without opening raw JSON.
 - `/line-webhooks/report` and `/line-webhooks/alerts` now include the same latest-pending helper metadata in both JSON and Markdown forms.
+- LINE file message logs also preserve `contentProvider` origin URLs when LINE sends them, so external-vs-LINE source tracking stays visible in audits.
+- LINE message summaries now include file names and contentProvider type when present, so file attachments are easier to scan in log views.
+- LINE file message logs now also preserve the resolved `content_type` so later audit views can tell how the payload was received.
+- LINE file message summaries now also include `content_type` so list views can distinguish the file payload at a glance.
+- LINE pending report summaries now also surface file / contentProvider details for easier backlog triage.
+- LINE alerts/report Markdown outputs now also mirror the latest pending file / contentProvider fields when they exist.
+- LINE webhook report Markdown now reads the LINE-specific fields from operation-log metadata for recent events, so the recent-events section stays readable.
+- JSONL / NDJSON extraction is builtin, and the README mentions it as a searchable structured-import path.
 - LINE unsend events are also stored as JSON snapshots with the removed message ID preserved in metadata when present.
 - Pending LINE retries and non-message snapshots now keep searchable operation-log metadata as well.
 - LINE webhook accept / skip / signature-failure outcomes are now recorded in the operation log.
@@ -163,7 +173,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
 - An optional OCR/image extraction entry point now exists, PDF extraction now prefers optional parser libraries when they are available, scanned-PDF OCR can be enabled with `pdf2image`, image preprocessing now helps OCR readiness, extraction provenance now stays in RAG metadata, and document list/detail / admin UI now expose the latest extraction snapshot, but a production-grade OCR backend, tuning, and deployment-ready OCR stack are still future work.
 - The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, and it now exposes a clear closed-state guard on its connection, but a cleaner DB/session boundary should still be added later.
-- The full local test suite is currently passing (137 tests).
+- The full local test suite is currently passing (183 tests).
 
 ## Verified Commands
 
@@ -181,6 +191,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 4. Implement the InsForge/PostgreSQL repository adapter and managed storage adapter behind the new runtime boundary.
 5. Expand OCR and image/PDF extraction into a production-grade pipeline so smartphone photos become searchable data.
 6. Expand the MCP server with richer prompt variants and fuller Streamable HTTP push notification handling if we need remote deployment.
+7. Grow the LINE迴ｾ蝣ｴ謨ｴ逅・ヱ繝・け into a slightly richer React-admin showcase only after the seed-to-admin review flow is stable.
 
 ## Related Docs
 
@@ -196,8 +207,11 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `GET /admin` is the current best human-readable landing page for the admin surface.
 - `GET /admin/resources` is the current best resource manifest for a React-admin style integration, and it already includes fields, form hints, supported actions, detail keys, and the standard `/cases` list path.
 - `GET /admin/ui` is the current best browser-facing admin shell before a full React-admin app exists, and it can browse resource data directly, open resource details, use the resource action bar, edit cases with the built-in case editor, run document reassign/reprocess/delete actions, inspect notification summary/trends/alerts/report views, and narrow case lists with due/invoice/output filters.
+- `GET /admin/demo-pack` is the current best LINE迴ｾ蝣ｴ謨ｴ逅・ヱ繝・け guide, and it points operators to the seed command plus the admin screens to review after seeding.
+- `GET /admin/invoices` and `GET /admin/missing-submissions` are the current best admin review endpoints for the demo pack's billing and omission views.
 - `GET /operation-logs/{operation_log_id}` and `GET /notification-deliveries/{notification_delivery_id}` now fill the last detail-view gaps for admin browsing.
 - `app/services/document_snapshots.py` now holds the shared document extraction snapshot builder used by both the API and MCP resource readers.
+- `scripts/seed_demo_pack.ps1` is a Windows-friendly wrapper for the LINE迴ｾ蝣ｴ謨ｴ逅・ヱ繝・け seed command.
 - `app/services/extraction.py` now has builtin RTF, XML, and EML text extraction paths alongside the existing text, HTML, JSON, DOCX, image OCR, and PDF extraction flow.
 - `app/services/extraction.py` now also has builtin `.xlsx` extraction so simple spreadsheet text becomes searchable without extra dependencies.
 - `app/services/extraction.py` now also has builtin `.ods` extraction so OpenDocument spreadsheets become searchable without extra dependencies.
@@ -208,9 +222,58 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `app/services/extraction.py` now strips HTML script/style noise before extracting text, which keeps HTML mail and page snippets cleaner.
 - `app/services/extraction.py` now also treats common text-like MIME types such as Markdown, YAML, TOML, and RST as plain-text extraction inputs even when the filename extension is unhelpful.
 - `app/services/extraction.py` now also has builtin JSONL / NDJSON extraction so line-delimited JSON stays searchable without extra tooling.
+- `app/services/extraction.py` now normalizes MIME parameters before extraction, so `text/markdown; charset=utf-8`-style inputs still reach the right extractor.
+- `app/services/extraction.py` now also extracts `.ics` calendar invites into readable event text, with folded lines normalized for searchability.
+- `app/services/extraction.py` now also extracts `.vcf` contact cards into readable contact fields, so address books and business-card exports stay searchable.
 
 ## Working Rule For Future Changes
 
 If a change is about where the data is stored or how it is reused later, update the repository/storage boundary first.
 If a change is about user interaction, keep the chat connector separate from the ingestion core.
 If a change is about later reuse, route it through the ledger and derived artifacts rather than keeping it only in chat messages.
+
+## Current Completion Focus
+
+- The minimal LINE現場整理パック is now the preferred demo path: seed real-ish data, inspect `/admin/ui`, review `/admin/demo-pack`, and then move to real ingestion.
+- `frontend/react-admin-app/` is the manifest-driven React-admin starting point for cases, documents, invoices, missing submissions, notification deliveries, and operation logs.
+- Keep SQLite/local as the dev and test backend, and continue InsForge/PostgreSQL and InsForge storage work behind the repository/storage boundary.
+- Preserve the current repository/storage interfaces while expanding auth, customer separation, and invoicing/output flows.
+
+
+## Next Chat Handoff
+
+### Current State
+
+- The repo now has a working minimal demo path for `LINE現場整理パック`.
+- Python tests are passing locally (`185 tests` at the latest full run).
+- `frontend/react-admin-app/` is scaffolded and its production build succeeds after `npm install`.
+- The main remaining work is productization, not extraction micro-variants.
+
+### What to Start With Next
+
+1. Launch and inspect `frontend/react-admin-app/` against the local FastAPI backend.
+2. If the app still needs wiring cleanup, keep the work inside the manifest/data-provider boundary only.
+3. Then move to InsForge/PostgreSQL and storage adapters without breaking the current repository/storage interfaces.
+4. After that, add auth / customer separation, then billing / output workflows, then deploy / ops.
+
+### What Not to Spend Time On
+
+- Do not keep adding tiny extraction-format support in isolation.
+- Do not keep extending LINE metadata alone.
+- Do not treat RAG polish as completion.
+- Do not postpone admin UI, InsForge, auth, or billing/output work.
+
+### Useful Commands
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests
+cd frontend/react-admin-app
+npm install
+npm run build
+```
+
+### Known Gaps
+
+- Browser-based visual verification still needs a stable local launch path.
+- The React-admin app is scaffolded, but operational proof is still pending.
+- InsForge/PostgreSQL, auth, and billing/output remain the next major milestones.
