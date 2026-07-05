@@ -7,7 +7,7 @@ import hashlib
 from app.config import Settings
 from app.domain.models import RagEntry
 from app.repositories.base import Repository
-from app.services.extraction import extract_text
+from app.services.extraction import extract_text_details
 from app.storage.base import StorageAdapter
 
 
@@ -173,9 +173,10 @@ class DocumentService:
 
         try:
             content = self.storage.get_bytes(document.storage_key)
-            extracted_text = extract_text(document.filename, content, document.mime_type)
-            if extracted_text is None:
+            extraction_details = extract_text_details(document.filename, content, document.mime_type)
+            if extraction_details is None:
                 raise RuntimeError("No text could be extracted from the document.")
+            extracted_text = extraction_details.text
 
             text_key = f"extracted_text/{case.case_code}/{document.id}.txt"
             self.storage.put_bytes(text_key, extracted_text.encode("utf-8"), "text/plain")
@@ -196,6 +197,8 @@ class DocumentService:
                     "case_code": case.case_code,
                     "filename": document.filename,
                     "reprocess": True,
+                    "extraction_source": extraction_details.source_type,
+                    "extraction_engine": extraction_details.engine,
                 },
                 "content_hash": artifact.content_hash,
             }
@@ -220,6 +223,8 @@ class DocumentService:
                 metadata_json={
                     "extracted_text_length": len(extracted_text),
                     "rag_entry_count": len(rag_entries),
+                    "extraction_source": extraction_details.source_type,
+                    "extraction_engine": extraction_details.engine,
                 },
             )
             self.repository.update_processing_job(

@@ -168,6 +168,7 @@ class McpServerTests(unittest.TestCase):
                 )
                 detail_payload = json.loads(detail["result"]["contents"][0]["text"])
                 self.assertEqual(case.case_code, detail_payload["case"]["case_code"])
+                self.assertIn("extraction", detail_payload["documents"][0])
 
                 document_detail = server.handle(
                     {
@@ -179,6 +180,8 @@ class McpServerTests(unittest.TestCase):
                 )
                 document_payload = json.loads(document_detail["result"]["contents"][0]["text"])
                 self.assertEqual("doc.txt", document_payload["filename"])
+                self.assertIn("extraction", document_payload)
+                self.assertFalse(document_payload["extraction"]["available"])
                 self.assertGreaterEqual(repo.count_operation_logs(event_type="mcp_resource_read"), 3)
 
     def test_prompts_list_and_get(self) -> None:

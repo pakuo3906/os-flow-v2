@@ -6,6 +6,8 @@ import io
 import hmac
 import json
 import os
+import sys
+import types
 import tempfile
 import unittest
 import warnings
@@ -399,7 +401,7 @@ class ApiTests(unittest.TestCase):
                     second_job.id,
                     finished_at="2026-07-03T01:30:00+00:00",
                 )
-                repo.record_operation_log(
+                operation_log = repo.record_operation_log(
                     event_type="case_updated",
                     entity_type="case",
                     entity_id=case_two.id,
@@ -407,7 +409,7 @@ class ApiTests(unittest.TestCase):
                     message="Case updated for admin recent test.",
                     metadata_json={"case_code": case_two.case_code},
                 )
-                repo.record_notification_delivery(
+                notification_delivery = repo.record_notification_delivery(
                     deliver_to="auto",
                     destination="discord://admin-recent",
                     delivered_count=1,
@@ -442,6 +444,21 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual("sqlite", admin_overview.json()["settings"]["repository_backend"])
                     self.assertEqual("local", admin_overview.json()["settings"]["storage_backend"])
                     self.assertFalse(admin_overview.json()["settings"]["insforge"]["base_url_configured"])
+                    self.assertFalse(admin_overview.json()["settings"]["insforge"]["repository_ready"])
+                    self.assertFalse(admin_overview.json()["settings"]["insforge"]["storage_ready"])
+                    self.assertEqual(
+                        {
+                            "pypdf": False,
+                            "pdfplumber": False,
+                            "pdf2image": False,
+                            "pillow": False,
+                            "pytesseract": False,
+                            "pdf_text_parsing_ready": False,
+                            "image_ocr_ready": False,
+                            "scanned_pdf_ocr_ready": False,
+                        },
+                        admin_overview.json()["settings"]["extraction"],
+                    )
                     self.assertEqual(2, admin_overview.json()["summary"]["cases_total"])
                     self.assertEqual(2, admin_overview.json()["summary"]["documents_total"])
                     self.assertEqual(1, admin_overview.json()["breakdown"]["case_statuses"]["in_progress"])
@@ -452,12 +469,37 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(1, admin_overview.json()["breakdown"]["output_statuses"]["completed"])
                     self.assertEqual(2, admin_overview.json()["breakdown"]["document_source_types"]["discord"])
 
+                    admin_backends = client.get("/admin/backends")
+                    self.assertEqual(200, admin_backends.status_code)
+                    backends_body = admin_backends.json()
+                    self.assertEqual("development", backends_body["app_env"])
+                    self.assertEqual("sqlite", backends_body["repository_backend"])
+                    self.assertEqual("local", backends_body["storage_backend"])
+                    self.assertFalse(backends_body["insforge"]["repository_ready"])
+                    self.assertFalse(backends_body["insforge"]["storage_ready"])
+                    self.assertIn("INSFORGE_BASE_URL", backends_body["insforge"]["repository_missing"])
+                    self.assertIn("INSFORGE_STORAGE_BUCKET", backends_body["insforge"]["storage_missing"])
+                    self.assertEqual(
+                        {
+                            "pypdf": False,
+                            "pdfplumber": False,
+                            "pdf2image": False,
+                            "pillow": False,
+                            "pytesseract": False,
+                            "pdf_text_parsing_ready": False,
+                            "image_ocr_ready": False,
+                            "scanned_pdf_ocr_ready": False,
+                        },
+                        backends_body["extraction"],
+                    )
+
                     admin_recent = client.get("/admin/recent", params={"limit": 1})
                     self.assertEqual(200, admin_recent.status_code)
                     recent_body = admin_recent.json()
                     self.assertEqual(1, recent_body["limit"])
                     self.assertEqual("CASE-API-2", recent_body["cases"][0]["case_code"])
                     self.assertEqual("appendix.jpg", recent_body["documents"][0]["filename"])
+                    self.assertIn("extraction", recent_body["documents"][0])
                     self.assertEqual("case_updated", recent_body["operation_logs"][0]["event_type"])
                     self.assertEqual("auto", recent_body["notification_deliveries"][0]["deliver_to"])
 
@@ -510,10 +552,24 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual(2, dashboard_body["overview"]["summary"]["cases_total"])
                     self.assertEqual(1, dashboard_body["recent"]["limit"])
                     self.assertEqual("CASE-API-2", dashboard_body["recent"]["cases"][0]["case_code"])
+                    self.assertIn("extraction", dashboard_body["recent"]["documents"][0])
                     self.assertEqual(5, dashboard_body["activity"]["limit"])
                     self.assertTrue(all(item["kind"] == "case" for item in dashboard_body["activity"]["items"]))
                     self.assertEqual(1, dashboard_body["notifications"]["total"])
                     self.assertEqual(0, len(dashboard_body["notifications"]["recent_failures"]))
+                    self.assertEqual(
+                        {
+                            "pypdf": False,
+                            "pdfplumber": False,
+                            "pdf2image": False,
+                            "pillow": False,
+                            "pytesseract": False,
+                            "pdf_text_parsing_ready": False,
+                            "image_ocr_ready": False,
+                            "scanned_pdf_ocr_ready": False,
+                        },
+                        dashboard_body["overview"]["settings"]["extraction"],
+                    )
 
                     admin_page = client.get("/admin")
                     self.assertEqual(200, admin_page.status_code)
@@ -521,6 +577,8 @@ class ApiTests(unittest.TestCase):
                     self.assertIn("/admin/dashboard", admin_page.text)
                     self.assertIn("CASE-API-2", admin_page.text)
                     self.assertIn("appendix.jpg", admin_page.text)
+                    self.assertIn("no extraction snapshot", admin_page.text)
+                    self.assertIn("Extraction helpers:", admin_page.text)
 
                     admin_resources = client.get("/admin/resources")
                     self.assertEqual(200, admin_resources.status_code)
@@ -529,8 +587,62 @@ class ApiTests(unittest.TestCase):
                         ["cases", "documents", "operation_logs", "notification_deliveries", "admin"],
                         [resource["name"] for resource in resources_body["resources"]],
                     )
-                    self.assertIn("collection_path", resources_body["resources"][0])
+                    self.assertEqual("/cases", resources_body["resources"][0]["collection_path"])
+                    self.assertEqual("/cases/search", resources_body["resources"][0]["search_path"])
                     self.assertIn("filters", resources_body["resources"][1])
+                    self.assertIn("supports", resources_body["resources"][0])
+                    self.assertIn("label_field", resources_body["resources"][1])
+                    self.assertEqual("case_id", resources_body["resources"][0]["detail_key"])
+                    self.assertIn("default_sort", resources_body["resources"][2])
+                    self.assertIn("detail_fields", resources_body["resources"][3])
+                    self.assertEqual("notification_delivery_id", resources_body["resources"][3]["detail_key"])
+                    self.assertEqual("/cases/{case_id}", resources_body["resources"][0]["edit_path"])
+                    self.assertEqual(
+                        ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
+                        [field["name"] for field in resources_body["resources"][0]["form_fields"]],
+                    )
+                    self.assertEqual(
+                        ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
+                        resources_body["resources"][0]["editable_fields"],
+                    )
+                    self.assertEqual(["edit", "activity"], resources_body["resources"][0]["actions"])
+                    self.assertEqual(["manage", "activity", "reassign", "reprocess", "delete"], resources_body["resources"][1]["actions"])
+                    self.assertEqual(["view", "summary", "trends", "alerts", "report"], resources_body["resources"][3]["actions"])
+
+                    admin_react_admin = client.get("/admin/react-admin")
+                    self.assertEqual(200, admin_react_admin.status_code)
+                    react_admin_body = admin_react_admin.json()
+                    self.assertEqual("react-admin", react_admin_body["framework"])
+                    self.assertEqual(
+                        ["cases", "documents", "operation_logs", "notification_deliveries", "admin"],
+                        [resource["name"] for resource in react_admin_body["resources"]],
+                    )
+                    self.assertEqual("/cases", react_admin_body["resources"][0]["listPath"])
+                    self.assertEqual("/cases/{case_id}", react_admin_body["resources"][0]["showPath"])
+                    self.assertEqual("/cases/{case_id}", react_admin_body["resources"][0]["editPath"])
+                    self.assertEqual(
+                        ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
+                        [field["name"] for field in react_admin_body["resources"][0]["formFields"]],
+                    )
+                    self.assertEqual(["edit", "activity"], react_admin_body["resources"][0]["actions"])
+                    self.assertIn("extraction", react_admin_body["resources"][1]["fields"])
+                    self.assertIn("extraction", react_admin_body["resources"][1]["detailFields"])
+
+                    operation_log_detail = client.get(f"/operation-logs/{operation_log.id}")
+                    self.assertEqual(200, operation_log_detail.status_code)
+                    self.assertEqual(operation_log.id, operation_log_detail.json()["id"])
+                    self.assertEqual("case_updated", operation_log_detail.json()["event_type"])
+
+                    notification_detail = client.get(f"/notification-deliveries/{notification_delivery.id}")
+                    self.assertEqual(200, notification_detail.status_code)
+                    self.assertEqual(notification_delivery.id, notification_detail.json()["id"])
+                    self.assertEqual("auto", notification_detail.json()["deliver_to"])
+
+                    cases_alias = client.get("/cases", params={"limit": 1})
+                    self.assertEqual(200, cases_alias.status_code)
+                    self.assertEqual("2", cases_alias.headers.get("X-Total-Count"))
+                    self.assertEqual(1, len(cases_alias.json()))
+                    self.assertEqual("CASE-API-2", cases_alias.json()[0]["case_code"])
 
                     admin_ui = client.get("/admin/ui")
                     self.assertEqual(200, admin_ui.status_code)
@@ -538,6 +650,40 @@ class ApiTests(unittest.TestCase):
                     self.assertIn("/admin/dashboard", admin_ui.text)
                     self.assertIn("/admin/resources", admin_ui.text)
                     self.assertIn("activityKind", admin_ui.text)
+                    self.assertIn("supports", admin_ui.text)
+                    self.assertIn("resourceSelect", admin_ui.text)
+                    self.assertIn("resourceBrowserContent", admin_ui.text)
+                    self.assertIn("loadResourceButton", admin_ui.text)
+                    self.assertIn("Load detail", admin_ui.text)
+                    self.assertIn("resourceActionBar", admin_ui.text)
+                    self.assertIn("resourceDueBefore", admin_ui.text)
+                    self.assertIn("resourceInvoiceStatus", admin_ui.text)
+                    self.assertIn("resourceOutputStatus", admin_ui.text)
+                    self.assertIn("Case Editor", admin_ui.text)
+                    self.assertIn("caseEditorFields", admin_ui.text)
+                    self.assertIn("caseEditorLoadButton", admin_ui.text)
+                    self.assertIn("caseEditorSaveButton", admin_ui.text)
+                    self.assertIn("Document Tools", admin_ui.text)
+                    self.assertIn("documentToolLoadButton", admin_ui.text)
+                    self.assertIn("documentToolReassignButton", admin_ui.text)
+                    self.assertIn("documentToolReprocessButton", admin_ui.text)
+                    self.assertIn("documentToolDeleteButton", admin_ui.text)
+                    self.assertIn("Edit case", admin_ui.text)
+                    self.assertIn("Manage document", admin_ui.text)
+                    self.assertIn("Extraction:", admin_ui.text)
+                    self.assertIn("Notification Explorer", admin_ui.text)
+                    self.assertIn("notificationExplorerSummaryButton", admin_ui.text)
+                    self.assertIn("notificationExplorerTrendsButton", admin_ui.text)
+                    self.assertIn("notificationExplorerAlertsButton", admin_ui.text)
+                    self.assertIn("notificationExplorerReportButton", admin_ui.text)
+                    self.assertIn("resourceActionCaseEditor", admin_ui.text)
+                    self.assertIn("resourceActionDocumentTool", admin_ui.text)
+                    self.assertIn("resourceActionNotificationSummary", admin_ui.text)
+                    self.assertIn("Extraction helpers:", admin_ui.text)
+                    self.assertIn("extraction", admin_ui.text)
+                    self.assertIn("PDF text parsing ready:", admin_ui.text)
+                    self.assertIn("Image OCR ready:", admin_ui.text)
+                    self.assertIn("Scanned PDF OCR ready:", admin_ui.text)
 
                     cases_page_one = client.get("/cases/search", params={"limit": 1})
                     self.assertEqual(200, cases_page_one.status_code)
@@ -554,11 +700,22 @@ class ApiTests(unittest.TestCase):
                     detail_response = client.get(f"/cases/{case.id}")
                     self.assertEqual(200, detail_response.status_code)
                     self.assertEqual(1, len(detail_response.json()["documents"]))
+                    case_document_item = detail_response.json()["documents"][0]
+                    self.assertIn("extraction", case_document_item)
+                    self.assertTrue(case_document_item["extraction"]["available"])
+                    self.assertIn("extraction_source", case_document_item["extraction"])
+                    self.assertIn("extraction_engine", case_document_item["extraction"])
 
                     documents_response = client.get("/documents", params={"case_id": case.id})
                     self.assertEqual(200, documents_response.status_code)
                     self.assertEqual(1, len(documents_response.json()))
                     self.assertEqual("1", documents_response.headers.get("X-Total-Count"))
+                    document_item = documents_response.json()[0]
+                    self.assertIn("extraction", document_item)
+                    self.assertTrue(document_item["extraction"]["available"])
+                    self.assertIn("extraction_source", document_item["extraction"])
+                    self.assertIn("extraction_engine", document_item["extraction"])
+                    self.assertIn("extraction_mode", document_item["extraction"])
 
                     document_response = client.get(f"/documents/{document.id}")
                     self.assertEqual(200, document_response.status_code)
@@ -675,6 +832,24 @@ class ApiTests(unittest.TestCase):
                     body = response.json()
                     self.assertEqual("CASE-JSON-1", body["case_code"])
                     self.assertTrue((settings.storage_root / body["original_storage_key"]).exists())
+
+                    case_detail = client.get(f"/cases/{body['case_id']}")
+                    self.assertEqual(200, case_detail.status_code)
+                    self.assertEqual(
+                        "builtin",
+                        json.loads(case_detail.json()["rag_entries"][0]["metadata_json"])["extraction_engine"],
+                    )
+                    self.assertEqual(
+                        "text",
+                        json.loads(case_detail.json()["rag_entries"][0]["metadata_json"])["extraction_source"],
+                    )
+
+                    document_detail = client.get(f"/documents/{body['document_id']}")
+                    self.assertEqual(200, document_detail.status_code)
+                    self.assertTrue(document_detail.json()["extraction"]["available"])
+                    self.assertEqual("text", document_detail.json()["extraction"]["extraction_source"])
+                    self.assertEqual("builtin", document_detail.json()["extraction"]["extraction_engine"])
+                    self.assertEqual("auto", document_detail.json()["extraction"]["extraction_mode"])
 
                     jobs_response = client.get("/processing-jobs", params={"case_id": body["case_id"]})
                     self.assertEqual(200, jobs_response.status_code)
@@ -2960,6 +3135,211 @@ class ExtractionTests(unittest.TestCase):
         text = extract_text("sample.docx", buffer.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         self.assertEqual("Hello\nWorld", text)
 
+    def test_extract_text_details_reports_builtin_source_for_plain_text(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        details = extract_text_details("sample.txt", b"hello world", "text/plain")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("hello world", details.text)
+        self.assertEqual("text", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_xlsx_workbooks(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        workbook = io.BytesIO()
+        with zipfile.ZipFile(workbook, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "xl/workbook.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
+                </workbook>""",
+            )
+            archive.writestr(
+                "xl/sharedStrings.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+                    <si><t>Hello</t></si>
+                    <si><t>World</t></si>
+                </sst>""",
+            )
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                    <sheetData>
+                        <row r="1">
+                            <c r="A1" t="s"><v>0</v></c>
+                            <c r="B1" t="s"><v>1</v></c>
+                        </row>
+                    </sheetData>
+                </worksheet>""",
+            )
+
+        details = extract_text_details(
+            "sample.xlsx",
+            workbook.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello World", details.text)
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_ods_spreadsheets(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        workbook = io.BytesIO()
+        with zipfile.ZipFile(workbook, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "content.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <office:document-content
+                    xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                    xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+                    <office:body>
+                        <office:text>
+                            <text:p>Hello</text:p>
+                            <text:p>World</text:p>
+                        </office:text>
+                    </office:body>
+                </office:document-content>""",
+            )
+
+        details = extract_text_details(
+            "sample.ods",
+            workbook.getvalue(),
+            "application/vnd.oasis.opendocument.spreadsheet",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello\nWorld", details.text)
+        self.assertEqual("spreadsheet", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_odt_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        document = io.BytesIO()
+        with zipfile.ZipFile(document, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "content.xml",
+                """<?xml version="1.0" encoding="UTF-8"?>
+                <office:document-content
+                    xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+                    xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+                    <office:body>
+                        <office:text>
+                            <text:h>Hello</text:h>
+                            <text:p>World</text:p>
+                        </office:text>
+                    </office:body>
+                </office:document-content>""",
+            )
+
+        details = extract_text_details(
+            "sample.odt",
+            document.getvalue(),
+            "application/vnd.oasis.opendocument.text",
+        )
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello\nWorld", details.text)
+        self.assertEqual("odt", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_csv_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        details = extract_text_details("sample.csv", b"name,amount\nAlice,10\nBob,20", "text/csv")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("name amount\nAlice 10\nBob 20", details.text)
+        self.assertEqual("csv", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_tsv_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        details = extract_text_details("sample.tsv", b"name\tamount\nAlice\t10\nBob\t20", "text/tab-separated-values")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("name amount\nAlice 10\nBob 20", details.text)
+        self.assertEqual("tsv", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_rtf_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        details = extract_text_details("sample.rtf", br"{\rtf1\ansi Hello\par World}", "application/rtf")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello World", details.text)
+        self.assertEqual("rtf", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_xml_documents(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        details = extract_text_details("sample.xml", b"<root><title>Hello</title><body>World</body></root>", "application/xml")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello World", details.text)
+        self.assertEqual("xml", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_handles_eml_messages(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        eml = (
+            "From: sender@example.com\r\n"
+            "To: receiver@example.com\r\n"
+            "Subject: Example\r\n"
+            "Content-Type: multipart/alternative; boundary=boundary\r\n"
+            "\r\n"
+            "--boundary\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            "\r\n"
+            "Plain body\r\n"
+            "--boundary\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            "\r\n"
+            "<p>HTML body</p>\r\n"
+            "--boundary--\r\n"
+        ).encode("utf-8")
+
+        details = extract_text_details("sample.eml", eml, "message/rfc822")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Plain body", details.text)
+        self.assertEqual("eml", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
+    def test_extract_text_details_strips_html_noise(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        html_doc = b"<html><head><style>.x{display:none}</style><script>alert('x')</script></head><body><p>Hello</p><p>World</p></body></html>"
+
+        details = extract_text_details("sample.html", html_doc, "text/html")
+
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("Hello World", details.text)
+        self.assertEqual("html", details.source_type)
+        self.assertEqual("builtin", details.engine)
+
     def test_routes_image_files_into_ocr_hook(self) -> None:
         with patch("app.services.extraction._extract_image_text", return_value="Detected image text") as ocr_hook:
             text = extract_text("sample.png", b"fake-image-bytes", "image/png")
@@ -2973,6 +3353,187 @@ class ExtractionTests(unittest.TestCase):
 
         self.assertIsNone(text)
         ocr_hook.assert_called_once_with(b"fake-image-bytes")
+
+    def test_prepare_image_for_ocr_converts_non_standard_modes_then_grayscale(self) -> None:
+        from app.services.extraction import _prepare_image_for_ocr
+
+        calls: list[str] = []
+
+        class FakeImage:
+            mode = "CMYK"
+
+            def convert(self, target_mode: str) -> "FakeImage":
+                calls.append(target_mode)
+                next_mode = target_mode
+                result = FakeImage()
+                result.mode = next_mode
+                return result
+
+        prepared = _prepare_image_for_ocr(FakeImage())
+
+        self.assertEqual(["RGB", "L"], calls)
+        self.assertEqual("L", prepared.mode)
+
+    def test_prepare_image_for_ocr_grayscale_converts_rgb_to_l(self) -> None:
+        from app.services.extraction import _prepare_image_for_ocr
+
+        calls: list[str] = []
+
+        class FakeImage:
+            mode = "RGB"
+
+            def convert(self, target_mode: str) -> "FakeImage":
+                calls.append(target_mode)
+                result = FakeImage()
+                result.mode = target_mode
+                return result
+
+        prepared = _prepare_image_for_ocr(FakeImage())
+
+        self.assertEqual(["L"], calls)
+        self.assertEqual("L", prepared.mode)
+
+    def test_prepare_image_for_ocr_applies_orientation_before_contrast(self) -> None:
+        from app.services.extraction import _prepare_image_for_ocr
+
+        convert_calls: list[str] = []
+        helper_calls: list[str] = []
+
+        class FakeImage:
+            mode = "CMYK"
+
+            def convert(self, target_mode: str) -> "FakeImage":
+                convert_calls.append(target_mode)
+                result = FakeImage()
+                result.mode = target_mode
+                return result
+
+        def fake_orientation(image: FakeImage) -> FakeImage:
+            helper_calls.append("orientation")
+            return image
+
+        def fake_contrast(image: FakeImage) -> FakeImage:
+            helper_calls.append(f"contrast:{image.mode}")
+            return image
+
+        with patch("app.services.extraction._apply_image_orientation", side_effect=fake_orientation), patch(
+            "app.services.extraction._apply_image_contrast", side_effect=fake_contrast
+        ):
+            prepared = _prepare_image_for_ocr(FakeImage())
+
+        self.assertEqual(["orientation", "contrast:L"], helper_calls)
+        self.assertEqual(["RGB", "L"], convert_calls)
+        self.assertEqual("L", prepared.mode)
+
+    def test_extracts_text_from_pdf_bytes_via_pypdf_when_available(self) -> None:
+        class FakePage:
+            def __init__(self, text: str) -> None:
+                self._text = text
+
+            def extract_text(self) -> str:
+                return self._text
+
+        class FakePdfReader:
+            def __init__(self, stream: io.BytesIO) -> None:
+                self.stream = stream
+                self.pages = [FakePage("First page"), FakePage("Second page")]
+
+        fake_module = types.ModuleType("pypdf")
+        fake_module.PdfReader = FakePdfReader
+
+        with patch.dict(sys.modules, {"pypdf": fake_module}):
+            text = extract_text("sample.pdf", b"%PDF-1.4 fake-content", "application/pdf")
+
+        self.assertEqual("First page\nSecond page", text)
+
+    def test_pdf_extraction_falls_back_to_regex_when_library_is_unavailable(self) -> None:
+        text = extract_text("sample.pdf", b"(Fallback text) Tj", "application/pdf")
+
+        self.assertEqual("Fallback text", text)
+
+    def test_extracts_text_from_scanned_pdf_bytes_via_pdf2image_ocr_when_available(self) -> None:
+        class FakePage:
+            pass
+
+        fake_module = types.ModuleType("pdf2image")
+        fake_module.convert_from_bytes = lambda content: [FakePage(), FakePage()]
+
+        with patch.dict(sys.modules, {"pdf2image": fake_module}), patch(
+            "app.services.extraction._extract_text_from_image_object",
+            side_effect=["Scanned first page", "Scanned second page"],
+        ) as ocr_hook:
+            text = extract_text("scanned.pdf", b"%PDF-1.4 scanned-content", "application/pdf")
+
+        self.assertEqual("Scanned first page\nScanned second page", text)
+        self.assertEqual(2, ocr_hook.call_count)
+
+    def test_reports_extraction_capabilities_from_installed_optional_modules(self) -> None:
+        fake_pypdf = types.ModuleType("pypdf")
+        fake_pdfplumber = types.ModuleType("pdfplumber")
+        fake_pdf2image = types.ModuleType("pdf2image")
+        fake_pil = types.ModuleType("PIL")
+        fake_pytesseract = types.ModuleType("pytesseract")
+
+        from app.services.extraction import get_extraction_capabilities
+
+        with patch.dict(
+            sys.modules,
+            {
+                "pypdf": fake_pypdf,
+                "pdfplumber": fake_pdfplumber,
+                "pdf2image": fake_pdf2image,
+                "PIL": fake_pil,
+                "pytesseract": fake_pytesseract,
+            },
+        ):
+            capabilities = get_extraction_capabilities()
+
+            self.assertEqual(
+                {
+                    "pypdf": True,
+                    "pdfplumber": True,
+                    "pdf2image": True,
+                    "pillow": True,
+                    "pytesseract": True,
+                    "pdf_text_parsing_ready": True,
+                    "image_ocr_ready": True,
+                    "scanned_pdf_ocr_ready": True,
+                },
+                capabilities,
+            )
+
+    def test_reports_extraction_capabilities_on_admin_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+            )
+
+            app = create_app()
+            app.state.repository.close()
+            app.state.repository = SQLiteRepository(settings.database_path)
+
+            try:
+                with TestClient(app) as client:
+                    response = client.get("/admin/overview")
+                    self.assertEqual(200, response.status_code)
+                    body = response.json()
+                    self.assertIn("extraction", body["settings"])
+                    self.assertIn("pypdf", body["settings"]["extraction"])
+                    self.assertIn("pytesseract", body["settings"]["extraction"])
+            finally:
+                app.state.repository.close()
 
 
 class ApiDeletionTests(unittest.TestCase):
@@ -3037,6 +3598,10 @@ class ApiDeletionTests(unittest.TestCase):
                     documents_response = client.get("/documents", params={"case_id": body["case_id"], "is_deleted": True})
                     self.assertEqual(200, documents_response.status_code)
                     self.assertEqual(1, len(documents_response.json()))
+                    deleted_document_item = documents_response.json()[0]
+                    self.assertIn("extraction", deleted_document_item)
+                    self.assertFalse(deleted_document_item["extraction"]["available"])
+                    self.assertEqual("no_rag_entry", deleted_document_item["extraction"]["reason"])
 
                     jobs_response = client.get("/processing-jobs", params={"case_id": body["case_id"]})
                     self.assertEqual(200, jobs_response.status_code)
@@ -3096,6 +3661,24 @@ class ApiReprocessTests(unittest.TestCase):
                     self.assertEqual(body["document_id"], reprocess_body["document_id"])
                     self.assertEqual(body["case_id"], reprocess_body["case_id"])
                     self.assertGreaterEqual(reprocess_body["extracted_text_length"], len("updated text"))
+
+                    case_detail = client.get(f"/cases/{body['case_id']}")
+                    self.assertEqual(200, case_detail.status_code)
+                    self.assertEqual(
+                        "builtin",
+                        json.loads(case_detail.json()["rag_entries"][0]["metadata_json"])["extraction_engine"],
+                    )
+                    self.assertEqual(
+                        "text",
+                        json.loads(case_detail.json()["rag_entries"][0]["metadata_json"])["extraction_source"],
+                    )
+
+                    document_detail = client.get(f"/documents/{body['document_id']}")
+                    self.assertEqual(200, document_detail.status_code)
+                    self.assertTrue(document_detail.json()["extraction"]["available"])
+                    self.assertEqual("text", document_detail.json()["extraction"]["extraction_source"])
+                    self.assertEqual("builtin", document_detail.json()["extraction"]["extraction_engine"])
+                    self.assertTrue(document_detail.json()["extraction"]["reprocess"])
 
                     rag_response = client.get("/rag/search", params={"case_id": body["case_id"], "query": "updated"})
                     self.assertEqual(200, rag_response.status_code)

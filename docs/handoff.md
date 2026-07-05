@@ -16,7 +16,8 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `app/repositories/sqlite.py` provides a SQLite-backed repository with schema initialization.
 - `app/storage/local.py` provides a local file storage adapter.
 - `app/services/ingestion.py` wires case registration, document registration, artifact registration, RAG output generation, and processing job tracking.
-- `app/services/extraction.py` adds best-effort automatic text extraction for common file types.
+- `app/services/extraction.py` adds best-effort automatic text extraction for common file types, now prefers optional PDF parsers (`pypdf` / `pdfplumber`) before falling back to the regex-based extractor, can optionally OCR scanned PDF pages through `pdf2image`, and also applies lightweight image preprocessing, orientation correction, and contrast normalization before OCR.
+- `requirements.txt` now documents the optional extraction helper packages so future OCR/PDF setup is easier to reproduce.
 - `app/services/documents.py` handles document deletion, storage cleanup, single-document reprocessing, selected-document batch reprocessing, case batch reprocessing, and related job tracking.
 - `app/mcp/tools.py` provides repository-backed business query tools that can later be wrapped by a real MCP server.
 - `app/mcp/server.py` provides a pure-Python stdio MCP server that exposes those repository-backed tools.
@@ -32,13 +33,24 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - `app/api/main.py` exposes `/mcp/overview` so subscriptions and queued events can be inspected together from the API surface, including per-type counts.
 - `app/api/main.py` exposes `/mcp/dashboard` as the compact MCP operational summary endpoint.
 - `app/api/main.py` exposes `/admin/overview` as a lightweight admin-facing snapshot with backend configuration flags and system counts.
+- `app/api/main.py` also exposes InsForge readiness flags in `/admin/overview` so future production backend setup can be staged incrementally.
+- `app/api/main.py` exposes `/admin/backends` as a compact backend configuration and readiness API for future setup screens.
+- `app/api/main.py` now also exposes extraction capability readiness in `/admin/overview` and `/admin/backends` so operators can see which optional PDF / OCR helpers are available, including composite readiness flags for PDF text parsing, image OCR, and scanned PDF OCR.
+- `app/services/ingestion.py` and `app/services/documents.py` now store extraction provenance in RAG metadata so later audits can see which engine produced a text artifact.
+- `app/api/main.py` now surfaces the latest document extraction snapshot through `GET /cases/{case_id}`, `GET /documents`, and `GET /documents/{document_id}` whenever a reusable text artifact exists.
+- The admin document tool also shows the latest extraction summary after loading a document, so operators can see the extraction source and engine without opening raw JSON.
+- The admin resource browser now adds an `extraction` column for documents so list views and document tools stay aligned.
+- The admin recent documents panel also includes extraction snapshots so the dashboard matches the document list/detail view.
+- `app/mcp/server.py` now includes extraction snapshots in case/document resource reads so the MCP-facing surface matches the API/admin views.
+- `app/api/main.py` exposes `/admin/react-admin` as a React-admin-friendly manifest for the future O's flow Admin app.
 - `app/api/main.py` also returns status breakdowns for cases, invoices, outputs, and document source types from `/admin/overview`.
 - The dashboard summary now includes per-event-type, per-resource, and top-resource counts.
 - `app/api/main.py` exposes `/admin/recent` for quick latest-item inspection and `/admin/activity` for a merged admin timeline with kind/case/document filters.
 - `app/api/main.py` exposes `/admin/dashboard` as the first consolidated admin landing payload.
 - `app/api/main.py` exposes `/admin` as a lightweight HTML admin landing page.
-- `app/api/main.py` exposes `/admin/resources` as a compact admin resource manifest.
-- `app/api/main.py` exposes `/admin/ui` as a lightweight browser-facing admin UI shell.
+- `app/api/main.py` exposes `/admin/resources` as a compact admin resource manifest with fields, form metadata, sort order, supported operations, supported actions, detail keys, editable case metadata, and the standard `/cases` list path.
+- `app/api/main.py` exposes `/admin/ui` as a lightweight browser-facing admin UI shell with browsable resource data, resource details, a resource action bar, a simple case editor backed by `PATCH /cases/{case_id}`, document actions for reassign/reprocess/delete, notification summary/trends/alerts/report views, and case list filters for due date, invoice state, and output state.
+- `app/api/main.py` now also exposes detail endpoints for operation logs and notification deliveries so the admin browser can open the selected row.
 - `app/mcp/http.py` now drains queued subscription-change events through `GET /mcp` as SSE lines before the keep-alive comment.
 - `app/api/main.py` now queues case, document, and ingestion resource-change notifications into the MCP transport after successful mutations.
 - `app/mcp/server.py` now records MCP usage events into the operation log for initialize, tools, resources, prompts, and unknown methods.
@@ -144,9 +156,9 @@ The operational goal is to make data reusable later for templates, reminders, bi
 - A basic notification digest worker now exists for due-task and invoice reminders, and Discord webhook / Slack webhook / LINE push / email SMTP delivery adapters are available.
 - Notification delivery history is recorded in SQLite and exposed through the API, and the same data powers the `report` command plus `/notification-deliveries/report` and `/notification-deliveries/report.md`.
 - MCP server support now exists via stdio and `/mcp` HTTP transports, and resource subscription bookkeeping is now tracked per session, but fuller Streamable HTTP push notifications are still future work.
-- An optional OCR/image extraction entry point now exists, but a production-grade OCR backend, tuning, and PDF OCR are still future work.
-- The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, but a cleaner DB/session boundary should be added later.
-- The full local test suite is currently passing (103 tests).
+- An optional OCR/image extraction entry point now exists, PDF extraction now prefers optional parser libraries when they are available, scanned-PDF OCR can be enabled with `pdf2image`, image preprocessing now helps OCR readiness, extraction provenance now stays in RAG metadata, and document list/detail / admin UI now expose the latest extraction snapshot, but a production-grade OCR backend, tuning, and deployment-ready OCR stack are still future work.
+- The SQLite repository currently uses `check_same_thread=False` so FastAPI threadpool access works, and it now exposes a clear closed-state guard on its connection, but a cleaner DB/session boundary should still be added later.
+- The full local test suite is currently passing (132 tests).
 
 ## Verified Commands
 
@@ -171,12 +183,22 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts\run_notification_job
 - `docs/implementation_directive.md` is the fixed direction future AI agents should read first.
 - `docs/notification_quick_reference.md` is the shortest operator-facing notification runbook.
 - `GET /admin/overview` is the current best low-friction starting point for a React-admin style UI.
+- `GET /admin/backends` is the current best compact backend setup API for InsForge readiness checks.
+- `GET /admin/react-admin` is the current best React-admin manifest for the future O's flow Admin app.
 - `GET /admin/recent` is the current best quick-look endpoint for operator timelines and latest activity.
 - `GET /admin/activity` is the current best merged timeline endpoint for admin-style dashboards, and it now accepts kind/case/document filters.
 - `GET /admin/dashboard` is the current best combined landing endpoint for a React-admin style UI.
 - `GET /admin` is the current best human-readable landing page for the admin surface.
-- `GET /admin/resources` is the current best resource manifest for a React-admin style integration.
-- `GET /admin/ui` is the current best browser-facing admin shell before a full React-admin app exists.
+- `GET /admin/resources` is the current best resource manifest for a React-admin style integration, and it already includes fields, form hints, supported actions, detail keys, and the standard `/cases` list path.
+- `GET /admin/ui` is the current best browser-facing admin shell before a full React-admin app exists, and it can browse resource data directly, open resource details, use the resource action bar, edit cases with the built-in case editor, run document reassign/reprocess/delete actions, inspect notification summary/trends/alerts/report views, and narrow case lists with due/invoice/output filters.
+- `GET /operation-logs/{operation_log_id}` and `GET /notification-deliveries/{notification_delivery_id}` now fill the last detail-view gaps for admin browsing.
+- `app/services/document_snapshots.py` now holds the shared document extraction snapshot builder used by both the API and MCP resource readers.
+- `app/services/extraction.py` now has builtin RTF, XML, and EML text extraction paths alongside the existing text, HTML, JSON, DOCX, image OCR, and PDF extraction flow.
+- `app/services/extraction.py` now also has builtin `.xlsx` extraction so simple spreadsheet text becomes searchable without extra dependencies.
+- `app/services/extraction.py` now also has builtin `.ods` extraction so OpenDocument spreadsheets become searchable without extra dependencies.
+- `app/services/extraction.py` now also has builtin `.odt` extraction so OpenDocument text documents become searchable without extra dependencies.
+- `app/services/extraction.py` now also has builtin `.csv` and `.tsv` extraction that normalizes rows for search-friendly text output.
+- `app/services/extraction.py` now strips HTML script/style noise before extracting text, which keeps HTML mail and page snippets cleaner.
 
 ## Working Rule For Future Changes
 

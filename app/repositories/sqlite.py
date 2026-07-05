@@ -30,10 +30,21 @@ class SQLiteRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database_path, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON;")
+        self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON;")
+        self._closed = False
         self._init_schema()
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if self._closed:
+            raise RuntimeError("SQLiteRepository is closed.")
+        return self._connection
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
 
     def __enter__(self) -> "SQLiteRepository":
         return self
@@ -42,7 +53,10 @@ class SQLiteRepository:
         self.close()
 
     def close(self) -> None:
-        self.connection.close()
+        if self._closed:
+            return
+        self._connection.close()
+        self._closed = True
 
     def _init_schema(self) -> None:
         self.connection.executescript(
@@ -905,6 +919,10 @@ class SQLiteRepository:
         rows = self.connection.execute(sql, params).fetchall()
         return [self._row_to_operation_log(row) for row in rows]
 
+    def get_operation_log(self, operation_log_id: int) -> OperationLog | None:
+        row = self.connection.execute("SELECT * FROM operation_logs WHERE id = ?", (operation_log_id,)).fetchone()
+        return self._row_to_operation_log(row) if row is not None else None
+
     def count_operation_logs(
         self,
         *,
@@ -1005,6 +1023,13 @@ class SQLiteRepository:
         params.extend([limit, offset])
         rows = self.connection.execute(sql, params).fetchall()
         return [self._row_to_notification_delivery_log(row) for row in rows]
+
+    def get_notification_delivery(self, notification_delivery_id: int) -> NotificationDeliveryLog | None:
+        row = self.connection.execute(
+            "SELECT * FROM notification_delivery_logs WHERE id = ?",
+            (notification_delivery_id,),
+        ).fetchone()
+        return self._row_to_notification_delivery_log(row) if row is not None else None
 
     def count_notification_deliveries(
         self,

@@ -76,6 +76,8 @@ class RuntimeFactoryTests(unittest.TestCase):
                 ai_model="gpt-4.1",
                 ai_base_url="https://api.openai.com/v1",
                 repository_backend="insforge",
+                insforge_base_url="https://example.insforge.invalid",
+                insforge_api_key="insforge-key",
                 insforge_database_url="postgresql://example",
                 insforge_project_id="project-123",
             )
@@ -100,11 +102,183 @@ class RuntimeFactoryTests(unittest.TestCase):
                 ai_model="gpt-4.1",
                 ai_base_url="https://api.openai.com/v1",
                 storage_backend="insforge",
+                insforge_base_url="https://example.insforge.invalid",
+                insforge_api_key="insforge-key",
+                insforge_storage_bucket="bucket-1",
                 insforge_storage_namespace="demo",
             )
 
             with self.assertRaises(NotImplementedError):
                 create_storage(settings)
+
+    def test_create_repository_reports_supported_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                repository_backend="unknown",
+            )
+
+            with self.assertRaises(NotImplementedError) as context:
+                create_repository(settings)
+
+            self.assertIn("supported: sqlite, insforge", str(context.exception))
+
+    def test_create_storage_reports_supported_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                storage_backend="unknown",
+            )
+
+            with self.assertRaises(NotImplementedError) as context:
+                create_storage(settings)
+
+            self.assertIn("supported: local, insforge", str(context.exception))
+
+    def test_create_repository_normalizes_backend_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                repository_backend=" SQLITE ",
+            )
+
+            repository = create_repository(settings)
+            try:
+                self.assertIsInstance(repository, SQLiteRepository)
+            finally:
+                repository.close()
+
+    def test_create_storage_normalizes_backend_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                storage_backend=" LOCAL ",
+            )
+
+            storage = create_storage(settings)
+            self.assertIsInstance(storage, LocalFileStorageAdapter)
+
+    def test_sqlite_repository_close_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repository = SQLiteRepository(root / "data" / "app.db")
+            repository.close()
+            repository.close()
+
+    def test_sqlite_repository_connection_rejects_after_close(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repository = SQLiteRepository(root / "data" / "app.db")
+            self.assertFalse(repository.is_closed)
+            repository.close()
+            self.assertTrue(repository.is_closed)
+
+            with self.assertRaises(RuntimeError) as context:
+                _ = repository.connection
+
+            self.assertIn("SQLiteRepository is closed", str(context.exception))
+
+    def test_create_repository_reports_missing_insforge_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                repository_backend="insforge",
+            )
+
+            with self.assertRaises(ValueError) as context:
+                create_repository(settings)
+
+            self.assertIn("INSFORGE_BASE_URL", str(context.exception))
+            self.assertIn("INSFORGE_API_KEY", str(context.exception))
+            self.assertIn("INSFORGE_DATABASE_URL", str(context.exception))
+            self.assertIn("INSFORGE_PROJECT_ID", str(context.exception))
+
+    def test_create_storage_reports_missing_insforge_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                storage_backend="insforge",
+            )
+
+            with self.assertRaises(ValueError) as context:
+                create_storage(settings)
+
+            self.assertIn("INSFORGE_BASE_URL", str(context.exception))
+            self.assertIn("INSFORGE_API_KEY", str(context.exception))
+            self.assertIn("INSFORGE_STORAGE_BUCKET", str(context.exception))
+            self.assertIn("INSFORGE_STORAGE_NAMESPACE", str(context.exception))
 
     def test_load_settings_exposes_insforge_placeholder_values(self) -> None:
         env = {

@@ -237,6 +237,9 @@ class Repository(Protocol):
     ) -> list[OperationLog]:
         ...
 
+    def get_operation_log(self, operation_log_id: int) -> OperationLog | None:
+        ...
+
     def count_operation_logs(
         self,
         *,
@@ -272,6 +275,9 @@ class Repository(Protocol):
         limit: int = 50,
         offset: int = 0,
     ) -> list[NotificationDeliveryLog]:
+        ...
+
+    def get_notification_delivery(self, notification_delivery_id: int) -> NotificationDeliveryLog | None:
         ...
 
     def count_notification_deliveries(

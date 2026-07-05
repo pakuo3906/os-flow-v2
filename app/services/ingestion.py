@@ -9,7 +9,7 @@ from pathlib import Path
 from app.config import Settings
 from app.domain.models import IngestionRequest
 from app.repositories.base import Repository
-from app.services.extraction import extract_text
+from app.services.extraction import extract_text_details
 from app.storage.base import StorageAdapter
 
 
@@ -69,7 +69,15 @@ class IngestionService:
 
             rag_storage_keys: list[str] = []
             provided_text = request.extracted_text.strip() if request.extracted_text and request.extracted_text.strip() else None
-            extracted_text = provided_text or extract_text(request.filename, request.content, request.mime_type)
+            extraction_source = "provided" if provided_text is not None else None
+            extraction_engine = "provided" if provided_text is not None else None
+            extracted_text = provided_text
+            if extracted_text is None:
+                extraction_details = extract_text_details(request.filename, request.content, request.mime_type)
+                if extraction_details is not None:
+                    extracted_text = extraction_details.text
+                    extraction_source = extraction_details.source_type
+                    extraction_engine = extraction_details.engine
             if extracted_text is not None:
                 text_key = f"extracted_text/{case.case_code}/{document.id}.txt"
                 self.storage.put_bytes(text_key, extracted_text.encode("utf-8"), "text/plain")
@@ -86,12 +94,14 @@ class IngestionService:
                     "title": request.title or request.filename,
                     "body_text": extracted_text,
                     "metadata_json": {
-                        "case_code": case.case_code,
-                        "filename": request.filename,
-                        "extraction_mode": "provided" if provided_text is not None else "auto",
-                    },
-                    "content_hash": artifact.content_hash,
-                }
+                    "case_code": case.case_code,
+                    "filename": request.filename,
+                    "extraction_mode": "provided" if provided_text is not None else "auto",
+                    "extraction_source": extraction_source,
+                    "extraction_engine": extraction_engine,
+                },
+                "content_hash": artifact.content_hash,
+            }
                 rag_key = f"rag/{case.case_code}/{document.id}.json"
                 self.storage.put_bytes(rag_key, json.dumps([rag_payload], ensure_ascii=False, indent=2).encode("utf-8"), "application/json")
                 self.repository.replace_rag_entries_for_document(document.id, [rag_payload])
@@ -138,6 +148,8 @@ class IngestionService:
                     "content_hash": content_hash,
                     "original_storage_key": original_storage_key,
                     "rag_storage_keys": rag_storage_keys,
+                    "extraction_source": extraction_source,
+                    "extraction_engine": extraction_engine,
                 },
             )
             return IngestionResult(
