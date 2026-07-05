@@ -132,6 +132,7 @@ The operational goal is to make data reusable later for templates, reminders, bi
 
 - Dedicated Discord and LINE connector routes now exist in the new `app/` package, while the shared chat-ingestion API remains the shared ledger entrypoint.
 - LINE media events can fall back to the `LINE-INBOX` triage case when they do not include a case code in text or filename.
+- Common config and documentation text formats such as `.toml`, `.ini`, `.cfg`, `.env`, `.rst`, and `.adoc` are also treated as text-like for extraction.
 - LINE sticker and location events are stored as simple text snapshots in the inbox bucket so they remain searchable.
 - LINE follow-style non-message events are stored as JSON snapshots in the inbox bucket so contact events are preserved too.
 - LINE join and leave events are also stored as JSON snapshots in the inbox bucket so membership changes are preserved too.

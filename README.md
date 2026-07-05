@@ -133,6 +133,7 @@ The markdown report mirrors the same data in a human-readable format for Slack, 
 - Connector-specific ingestion endpoints are also available under `/connectors/discord/chat-ingestions` and `/connectors/line/chat-ingestions` so external chat adapters can stay separate from the core ingestion path.
 - A LINE webhook bridge is also available at `/connectors/line/webhook` for signed LINE Messaging API events, including text and file/media ingestion.
 - LINE media events without a case code can fall back to the `LINE_INBOX_CASE_CODE` triage bucket, which defaults to `LINE-INBOX`.
+- Common config and documentation text formats such as `.toml`, `.ini`, `.cfg`, `.env`, `.rst`, and `.adoc` are also treated as text-like for extraction.
 - LINE sticker and location messages are also stored as simple text snapshots in the inbox bucket so non-file business notes are not lost.
 - LINE follow-style non-message events are also stored as JSON snapshots in the inbox bucket so contact events are not lost.
 - LINE join and leave events are also stored as JSON snapshots in the inbox bucket so group membership changes are not lost.

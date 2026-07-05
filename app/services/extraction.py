@@ -127,7 +127,21 @@ def extract_text_details(filename: str, content: bytes, mime_type: str | None = 
 
 
 def _is_text_like(extension: str, mime_type: str) -> bool:
-    return extension in {".txt", ".md", ".csv", ".log", ".tsv", ".yaml", ".yml"} or mime_type.startswith("text/")
+    return extension in {
+        ".txt",
+        ".md",
+        ".rst",
+        ".adoc",
+        ".csv",
+        ".log",
+        ".tsv",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".env",
+    } or mime_type.startswith("text/")
 
 
 def _is_image(extension: str, mime_type: str) -> bool:

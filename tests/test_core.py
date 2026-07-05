@@ -3363,6 +3363,23 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual("tsv", details.source_type)
         self.assertEqual("builtin", details.engine)
 
+    def test_extract_text_details_handles_config_and_document_text_files(self) -> None:
+        from app.services.extraction import extract_text_details
+
+        cases = [
+            ("pyproject.toml", b"[tool.poetry]\nname = 'oflow'", "application/toml", "text"),
+            ("settings.ini", b"[app]\nname = O's flow", "text/plain", "text"),
+            ("notes.rst", b"Title\n=====\n\nBody", "text/x-rst", "text"),
+        ]
+
+        for filename, content, mime_type, expected_source_type in cases:
+            with self.subTest(filename=filename):
+                details = extract_text_details(filename, content, mime_type)
+                self.assertIsNotNone(details)
+                assert details is not None
+                self.assertEqual(expected_source_type, details.source_type)
+                self.assertEqual("builtin", details.engine)
+
     def test_extract_text_details_handles_rtf_documents(self) -> None:
         from app.services.extraction import extract_text_details
 
