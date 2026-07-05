@@ -1189,6 +1189,8 @@ class ApiTests(unittest.TestCase):
                     logs = app.state.repository.list_operation_logs(event_type="line_webhook_ingested")
                     self.assertEqual(1, len(logs))
                     self.assertEqual(body["items"][0]["document_id"], logs[0].document_id)
+                    metadata = json.loads(logs[0].metadata_json)
+                    self.assertEqual("CASE-LINE-FILE-1.pdf", metadata["file_name"])
             finally:
                 app.state.repository.close()
 

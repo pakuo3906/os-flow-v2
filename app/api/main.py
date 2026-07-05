@@ -686,6 +686,8 @@ def create_app() -> FastAPI:
             "package_id",
             "sticker_resource_type",
             "keywords",
+            "file_name",
+            "content_provider_type",
             "location_title",
             "location_address",
             "location_latitude",

@@ -136,6 +136,14 @@ def build_line_message_extra_metadata(event: dict[str, Any], message: dict[str, 
     quoted_message_id = str(message.get("quotedMessageId") or event.get("quotedMessageId") or "").strip()
     if quoted_message_id:
         extra_metadata["quoted_message_id"] = quoted_message_id
+    file_name = str(message.get("fileName") or "").strip()
+    if file_name:
+        extra_metadata["file_name"] = file_name
+    content_provider = event.get("contentProvider") or {}
+    if isinstance(content_provider, dict):
+        content_provider_type = str(content_provider.get("type") or "").strip()
+        if content_provider_type:
+            extra_metadata["content_provider_type"] = content_provider_type
     message_type = str(message.get("type") or "").strip()
     if message_type == "sticker":
         sticker_id = str(message.get("stickerId") or "").strip()
