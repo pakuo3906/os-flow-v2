@@ -485,8 +485,38 @@ class ApiTests(unittest.TestCase):
                     self.assertEqual("local", backends_body["storage_backend"])
                     self.assertFalse(backends_body["insforge"]["repository_ready"])
                     self.assertFalse(backends_body["insforge"]["storage_ready"])
+                    self.assertFalse(backends_body["auth"]["ready"])
+                    self.assertFalse(backends_body["customer"]["ready"])
                     self.assertIn("INSFORGE_BASE_URL", backends_body["insforge"]["repository_missing"])
                     self.assertIn("INSFORGE_STORAGE_BUCKET", backends_body["insforge"]["storage_missing"])
+                    self.assertEqual("unset", backends_body["customer_scope"]["source"])
+                    self.assertIsNone(backends_body["customer_scope"]["effective_slug"])
+                    self.assertIsNone(backends_body["customer_scope"]["effective_name"])
+
+                    customer_meta = client.get(
+                        "/meta",
+                        headers={
+                            "X-Oflow-Customer-Slug": "acme",
+                            "X-Oflow-Customer-Name": "Acme Co",
+                        },
+                    )
+                    self.assertEqual(200, customer_meta.status_code)
+                    self.assertEqual("header", customer_meta.json()["customer_scope"]["source"])
+                    self.assertEqual("acme", customer_meta.json()["customer_scope"]["effective_slug"])
+                    self.assertEqual("Acme Co", customer_meta.json()["customer_scope"]["effective_name"])
+
+                    customer_backends = client.get(
+                        "/admin/backends",
+                        headers={
+                            "X-Oflow-Customer-Slug": "acme",
+                            "X-Oflow-Customer-Name": "Acme Co",
+                        },
+                    )
+                    self.assertEqual(200, customer_backends.status_code)
+                    self.assertEqual("header", customer_backends.json()["customer_scope"]["source"])
+                    self.assertEqual("acme", customer_backends.json()["customer_scope"]["effective_slug"])
+                    self.assertEqual("Acme Co", customer_backends.json()["customer_scope"]["effective_name"])
+
                     self.assertEqual(
                         {
                             "pypdf": False,
@@ -810,6 +840,27 @@ class ApiTests(unittest.TestCase):
                     job_response = client.get(f"/processing-jobs/{job.id}")
                     self.assertEqual(200, job_response.status_code)
                     self.assertEqual(job.id, job_response.json()["id"])
+
+                    scoped_case = client.post(
+                        "/cases",
+                        headers={
+                            "X-Oflow-Customer-Slug": "acme",
+                            "X-Oflow-Customer-Name": "Acme Co",
+                        },
+                        json={
+                            "case_code": "CASE-CUSTOMER-SCOPE-1",
+                            "title": "Customer scoped case",
+                            "filename": "note.txt",
+                            "content_base64": "aGVsbG8=",
+                        },
+                    )
+                    self.assertEqual(200, scoped_case.status_code)
+                    scoped_logs = app.state.repository.list_operation_logs(event_type="case_created")
+                    self.assertEqual(1, len(scoped_logs))
+                    scoped_metadata = json.loads(scoped_logs[0].metadata_json)
+                    self.assertEqual("acme", scoped_metadata["customer_scope"]["effective_slug"])
+                    self.assertEqual("Acme Co", scoped_metadata["customer_scope"]["effective_name"])
+                    self.assertEqual("header", scoped_metadata["customer_scope"]["source"])
             finally:
                 app.state.repository.close()
 
@@ -3206,7 +3257,11 @@ class ApiTests(unittest.TestCase):
                 "INSFORGE_STORAGE_BUCKET": "bucket-1",
                 "INSFORGE_STORAGE_NAMESPACE": "namespace-1",
                 "INSFORGE_AUTH_JWKS_URL": "https://example.insforge.invalid/.well-known/jwks.json",
+                "INSFORGE_AUTH_ISSUER_URL": "https://example.insforge.invalid",
+                "INSFORGE_AUTH_AUDIENCE": "oflow-admin",
                 "INSFORGE_MCP_BASE_URL": "https://example.insforge.invalid/mcp",
+                "CUSTOMER_DEFAULT_SLUG": "ozflow",
+                "CUSTOMER_DEFAULT_NAME": "Oz Flow Sample Customer",
             }
 
             with patch("app.config.load_dotenv", autospec=True, return_value=None):
@@ -3232,6 +3287,8 @@ class ApiTests(unittest.TestCase):
                     self.assertTrue(body["settings"]["insforge"]["storage_namespace_configured"])
                     self.assertTrue(body["settings"]["insforge"]["auth_jwks_url_configured"])
                     self.assertTrue(body["settings"]["insforge"]["mcp_base_url_configured"])
+                    self.assertTrue(body["settings"]["auth"]["ready"])
+                    self.assertTrue(body["settings"]["customer"]["ready"])
                     self.assertEqual(0, body["summary"]["cases_total"])
                     self.assertEqual(0, body["summary"]["documents_total"])
                     self.assertEqual(0, body["breakdown"]["case_statuses"]["new"])
@@ -3241,6 +3298,107 @@ class ApiTests(unittest.TestCase):
             finally:
                 app.state.repository.close()
 
+
+class CustomerScopeTests(unittest.TestCase):
+    def test_api_rejects_customer_scope_override_for_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = Settings(
+                app_env="test",
+                database_path=root / "data" / "app.db",
+                storage_root=root / "storage",
+                output_root=root / "output",
+                temp_root=root / "temp",
+                rag_root=root / "storage" / "rag",
+                discord_bot_token="",
+                target_channel_ids=(123,),
+                ai_provider="openai_compatible",
+                ai_api_key="",
+                ai_model="gpt-4.1",
+                ai_base_url="https://api.openai.com/v1",
+                customer_default_slug="tenant-a",
+                customer_default_name="Tenant A",
+            )
+
+            env = {
+                "APP_ENV": "test",
+                "DATABASE_PATH": str(settings.database_path),
+                "STORAGE_ROOT": str(settings.storage_root),
+                "OUTPUT_ROOT": str(settings.output_root),
+                "TEMP_ROOT": str(settings.temp_root),
+                "RAG_ROOT": str(settings.rag_root),
+                "DISCORD_BOT_TOKEN": "",
+                "DISCORD_TARGET_CHANNEL_IDS": "123",
+                "AI_PROVIDER": "openai_compatible",
+                "AI_API_KEY": "",
+                "AI_MODEL": "gpt-4.1",
+                "AI_BASE_URL": "https://api.openai.com/v1",
+                "CUSTOMER_DEFAULT_SLUG": settings.customer_default_slug or "",
+                "CUSTOMER_DEFAULT_NAME": settings.customer_default_name or "",
+            }
+
+            with patch("app.config.load_dotenv", autospec=True, return_value=None):
+                with patch.dict(os.environ, env, clear=True):
+                    app = create_app()
+
+            app.state.repository.close()
+            app.state.repository = SQLiteRepository(settings.database_path)
+            app.state.storage = LocalFileStorageAdapter(settings.storage_root)
+            app.state.ingestion_service = IngestionService(settings, app.state.repository, app.state.storage)
+            global_case = app.state.repository.upsert_case(case_code="CASE-GLOBAL", title="Global case")
+
+            try:
+                with TestClient(app) as client:
+                    rejected = client.post(
+                        "/cases",
+                        headers={
+                            "X-Oflow-Customer-Slug": "tenant-b",
+                            "X-Oflow-Customer-Name": "Tenant B",
+                        },
+                        json={
+                            "case_code": "CASE-TENANT-OVERRIDE",
+                            "title": "Should be rejected",
+                            "filename": "note.txt",
+                            "content_base64": "aGVsbG8=",
+                        },
+                    )
+                    self.assertEqual(403, rejected.status_code)
+                    self.assertIn("configured tenant", rejected.json()["detail"])
+
+                    rejected_read = client.get(
+                        "/cases",
+                        headers={
+                            "X-Oflow-Customer-Slug": "tenant-b",
+                            "X-Oflow-Customer-Name": "Tenant B",
+                        },
+                    )
+                    self.assertEqual(403, rejected_read.status_code)
+                    self.assertIn("configured tenant", rejected_read.json()["detail"])
+
+
+                    accepted = client.post(
+                        "/cases",
+                        json={
+                            "case_code": "CASE-TENANT-A",
+                            "title": "Tenant A case",
+                            "filename": "note.txt",
+                            "content_base64": "aGVsbG8=",
+                        },
+                    )
+                    self.assertEqual(200, accepted.status_code)
+                    metadata = json.loads(app.state.repository.list_operation_logs(event_type="case_created")[0].metadata_json)
+                    self.assertEqual("tenant-a", metadata["customer_scope"]["effective_slug"])
+                    self.assertEqual("Tenant A", metadata["customer_scope"]["effective_name"])
+
+                    listed_cases = client.get("/cases")
+                    self.assertEqual(200, listed_cases.status_code)
+                    self.assertCountEqual({"CASE-TENANT-A"}, {item["case_code"] for item in listed_cases.json()})
+
+                    hidden_case = client.get(f"/cases/{global_case.id}")
+                    self.assertEqual(200, hidden_case.status_code)
+                    self.assertIsNone(hidden_case.json())
+            finally:
+                app.state.repository.close()
 
 class ExtractionTests(unittest.TestCase):
     def test_extracts_text_from_docx_bytes(self) -> None:
@@ -5319,6 +5477,8 @@ class ApiReprocessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import tempfile
@@ -82,8 +82,8 @@ class RuntimeFactoryTests(unittest.TestCase):
                 insforge_project_id="project-123",
             )
 
-            with self.assertRaises(NotImplementedError):
-                create_repository(settings)
+            repository = create_repository(settings)
+            self.assertEqual("https://example.insforge.invalid", repository.config.base_url)
 
     def test_create_storage_accepts_insforge_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,8 +108,8 @@ class RuntimeFactoryTests(unittest.TestCase):
                 insforge_storage_namespace="demo",
             )
 
-            with self.assertRaises(NotImplementedError):
-                create_storage(settings)
+            storage = create_storage(settings)
+            self.assertEqual("https://example.insforge.invalid", storage.config.base_url)
 
     def test_create_repository_reports_supported_backends(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,7 +301,11 @@ class RuntimeFactoryTests(unittest.TestCase):
             "INSFORGE_STORAGE_BUCKET": "bucket-1",
             "INSFORGE_STORAGE_NAMESPACE": "namespace-1",
             "INSFORGE_AUTH_JWKS_URL": "https://example.insforge.invalid/.well-known/jwks.json",
+            "INSFORGE_AUTH_ISSUER_URL": "https://example.insforge.invalid",
+            "INSFORGE_AUTH_AUDIENCE": "oflow-admin",
             "INSFORGE_MCP_BASE_URL": "https://example.insforge.invalid/mcp",
+            "CUSTOMER_DEFAULT_SLUG": "ozflow",
+            "CUSTOMER_DEFAULT_NAME": "Oz Flow Sample Customer",
         }
 
         with patch("app.config.load_dotenv", autospec=True, return_value=None):
@@ -315,8 +319,13 @@ class RuntimeFactoryTests(unittest.TestCase):
         self.assertEqual("bucket-1", settings.insforge_storage_bucket)
         self.assertEqual("namespace-1", settings.insforge_storage_namespace)
         self.assertEqual("https://example.insforge.invalid/.well-known/jwks.json", settings.insforge_auth_jwks_url)
+        self.assertEqual("https://example.insforge.invalid", settings.insforge_auth_issuer_url)
+        self.assertEqual("oflow-admin", settings.insforge_auth_audience)
         self.assertEqual("https://example.insforge.invalid/mcp", settings.insforge_mcp_base_url)
+        self.assertEqual("ozflow", settings.customer_default_slug)
+        self.assertEqual("Oz Flow Sample Customer", settings.customer_default_name)
 
 
 if __name__ == "__main__":
     unittest.main()
+

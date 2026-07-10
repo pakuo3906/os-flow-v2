@@ -10,13 +10,15 @@ class Case:
     case_code: str
     title: str
     client_name: str | None
-    status: str
-    due_date: str | None
-    invoice_status: str
-    output_status: str
-    created_at: str
-    updated_at: str
-    last_processed_at: str | None
+    customer_slug: str | None = None
+    customer_name: str | None = None
+    status: str = "new"
+    due_date: str | None = None
+    invoice_status: str = "unbilled"
+    output_status: str = "pending"
+    created_at: str = ""
+    updated_at: str = ""
+    last_processed_at: str | None = None
 
 
 @dataclass(frozen=True)

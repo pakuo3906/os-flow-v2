@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import json
@@ -7,12 +7,14 @@ from datetime import date
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi import Request
 from pydantic import BaseModel, Field, field_validator
 
 from app.config import load_settings
 from app.domain.models import IngestionRequest
+from app.request_context import reset_customer_scope, set_customer_scope
 from app.services.chat_connectors import (
     build_chat_metadata_json,
     build_discord_source_path,
@@ -169,6 +171,72 @@ def _build_insforge_backend_status(settings) -> dict[str, Any]:  # noqa: ANN001
         "storage_ready": not storage_missing,
         "repository_missing": repository_missing,
         "storage_missing": storage_missing,
+    }
+
+
+def _build_auth_backend_status(settings) -> dict[str, Any]:  # noqa: ANN001
+    jwks_url_configured = bool((settings.insforge_auth_jwks_url or "").strip())
+    issuer_url_configured = bool((settings.insforge_auth_issuer_url or "").strip())
+    audience_configured = bool((settings.insforge_auth_audience or "").strip())
+    missing = [
+        name
+        for name, configured in {
+            "INSFORGE_AUTH_JWKS_URL": jwks_url_configured,
+            "INSFORGE_AUTH_ISSUER_URL": issuer_url_configured,
+            "INSFORGE_AUTH_AUDIENCE": audience_configured,
+        }.items()
+        if not configured
+    ]
+    return {
+        "jwks_url_configured": jwks_url_configured,
+        "issuer_url_configured": issuer_url_configured,
+        "audience_configured": audience_configured,
+        "ready": not missing,
+        "missing": missing,
+        "jwks_url": settings.insforge_auth_jwks_url,
+        "issuer_url": settings.insforge_auth_issuer_url,
+        "audience": settings.insforge_auth_audience,
+    }
+
+
+def _build_customer_scope_status(settings) -> dict[str, Any]:  # noqa: ANN001
+    default_slug_configured = bool((settings.customer_default_slug or "").strip())
+    default_name_configured = bool((settings.customer_default_name or "").strip())
+    missing = [
+        name
+        for name, configured in {
+            "CUSTOMER_DEFAULT_SLUG": default_slug_configured,
+            "CUSTOMER_DEFAULT_NAME": default_name_configured,
+        }.items()
+        if not configured
+    ]
+    return {
+        "default_slug_configured": default_slug_configured,
+        "default_name_configured": default_name_configured,
+        "ready": not missing,
+        "missing": missing,
+        "default_slug": settings.customer_default_slug,
+        "default_name": settings.customer_default_name,
+    }
+
+
+def _resolve_customer_scope(request: Request, settings) -> dict[str, Any]:  # noqa: ANN001
+    header_slug = (request.headers.get("X-Oflow-Customer-Slug") or request.headers.get("X-Customer-Slug") or "").strip()
+    header_name = (request.headers.get("X-Oflow-Customer-Name") or request.headers.get("X-Customer-Name") or "").strip()
+    default_slug = (settings.customer_default_slug or "").strip() or None
+    default_name = (settings.customer_default_name or "").strip() or None
+    effective_slug = header_slug or default_slug
+    effective_name = header_name or default_name
+    source = "header" if header_slug or header_name else ("settings" if default_slug or default_name else "unset")
+    return {
+        "source": source,
+        "header_slug": header_slug or None,
+        "header_name": header_name or None,
+        "effective_slug": effective_slug,
+        "effective_name": effective_name,
+        "default_slug": default_slug,
+        "default_name": default_name,
+        "ready": bool(effective_slug and effective_name),
     }
 
 
@@ -614,6 +682,16 @@ def create_app() -> FastAPI:
     line_webhook_client = LineWebhookClient(settings, ingestion_service)
 
     app = FastAPI(title="O's flow V2", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.settings = settings
     app.state.repository = repository
     app.state.storage = storage
@@ -621,6 +699,47 @@ def create_app() -> FastAPI:
     app.state.document_service = document_service
     app.state.mcp_transport = mcp_transport
     app.state.line_webhook_client = line_webhook_client
+
+    @app.middleware("http")
+    async def attach_customer_scope(request: Request, call_next):
+        request.state.customer_scope = _resolve_customer_scope(request, settings)
+        token = set_customer_scope(request.state.customer_scope)
+        response = None
+        try:
+            scope = request.state.customer_scope
+            header_slug = scope.get("header_slug")
+            header_name = scope.get("header_name")
+            default_slug = scope.get("default_slug")
+            default_name = scope.get("default_name")
+            if default_slug and header_slug and header_slug != default_slug:
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Customer slug does not match the configured tenant.",
+                        "customer_scope": scope,
+                    },
+                )
+                return response
+            if default_name and header_name and header_name != default_name:
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Customer name does not match the configured tenant.",
+                        "customer_scope": scope,
+                    },
+                )
+                return response
+            response = await call_next(request)
+        finally:
+            reset_customer_scope(token)
+        if response is None:
+            raise RuntimeError("Customer scope middleware did not receive a response.")
+        scope = request.state.customer_scope
+        if scope.get("effective_slug"):
+            response.headers["X-Oflow-Customer-Slug"] = str(scope["effective_slug"])
+        if scope.get("effective_name"):
+            response.headers["X-Oflow-Customer-Name"] = str(scope["effective_name"])
+        return response
 
     def current_repository():
         return app.state.repository
@@ -821,11 +940,12 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/meta")
-    def meta() -> dict[str, str]:
+    def meta(request: Request) -> dict[str, object]:
         return {
             "environment": settings.app_env,
             "database_path": str(settings.database_path),
             "storage_root": str(settings.storage_root),
+            "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
         }
 
     @app.get("/summary")
@@ -842,7 +962,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/admin/overview")
-    def admin_overview() -> dict[str, object]:
+    def admin_overview(request: Request) -> dict[str, object]:
         repository = current_repository()
         case_statuses = ("new", "in_progress", "completed")
         invoice_statuses = ("unbilled", "pending")
@@ -854,6 +974,9 @@ def create_app() -> FastAPI:
                 "repository_backend": settings.repository_backend,
                 "storage_backend": settings.storage_backend,
                 "insforge": _build_insforge_backend_status(settings),
+                "auth": _build_auth_backend_status(settings),
+                "customer": _build_customer_scope_status(settings),
+                "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
                 "extraction": _build_extraction_backend_status(),
             },
             "summary": {
@@ -874,13 +997,26 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/admin/backends")
-    def admin_backends() -> dict[str, object]:
+    def admin_backends(request: Request) -> dict[str, object]:
         return {
             "app_env": settings.app_env,
             "repository_backend": settings.repository_backend,
             "storage_backend": settings.storage_backend,
             "insforge": _build_insforge_backend_status(settings),
+            "auth": _build_auth_backend_status(settings),
+            "customer": _build_customer_scope_status(settings),
+            "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
             "extraction": _build_extraction_backend_status(),
+        }
+
+    @app.get("/admin/auth")
+    def admin_auth(request: Request) -> dict[str, object]:
+        return {
+            "app_env": settings.app_env,
+            "insforge": _build_insforge_backend_status(settings),
+            "auth": _build_auth_backend_status(settings),
+            "customer": _build_customer_scope_status(settings),
+            "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
         }
 
     @app.get("/admin/recent")
@@ -922,6 +1058,7 @@ def create_app() -> FastAPI:
 
     @app.get("/admin/dashboard")
     def admin_dashboard(
+        request: Request,
         recent_limit: int = 5,
         activity_limit: int = 20,
         kind: str | None = None,
@@ -933,7 +1070,7 @@ def create_app() -> FastAPI:
         normalized_recent_limit = max(1, min(recent_limit, 50))
         normalized_activity_limit = max(1, min(activity_limit, 50))
         return {
-            "overview": admin_overview(),
+            "overview": admin_overview(request),
             "recent": admin_recent(limit=normalized_recent_limit),
             "activity": admin_activity(
                 limit=normalized_activity_limit,
@@ -949,8 +1086,8 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/admin", response_class=HTMLResponse)
-    def admin_page() -> str:
-        dashboard = admin_dashboard(recent_limit=3, activity_limit=5)
+    def admin_page(request: Request) -> str:
+        dashboard = admin_dashboard(request, recent_limit=3, activity_limit=5)
         overview = dashboard["overview"]
         recent = dashboard["recent"]
         activity = dashboard["activity"]
@@ -3369,6 +3506,8 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
 
 
 
