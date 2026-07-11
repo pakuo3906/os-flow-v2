@@ -6,6 +6,10 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, TextIO
 
+from app.services.document_snapshots import (
+    attach_document_extraction_snapshots,
+    build_document_extraction_snapshot,
+)
 from app.repositories.base import Repository
 from app.mcp.tools import (
     get_case_detail_tool,
@@ -592,12 +596,18 @@ class MCPServer:
             detail = self.repository.get_case_detail(case_id)
             if detail is None:
                 return {"content": [{"type": "text", "text": "Case not found."}], "isError": True}
+            serialized_detail = _json_safe(detail)
+            serialized_detail["documents"] = attach_document_extraction_snapshots(
+                getattr(detail, "documents", []),
+                self.repository.get_case_detail,
+                serialize_document=_json_safe,
+            )
             return {
                 "contents": [
                     {
                         "uri": uri,
                         "mimeType": "application/json",
-                        "text": json.dumps(_json_safe(detail), ensure_ascii=False),
+                        "text": json.dumps(serialized_detail, ensure_ascii=False),
                     }
                 ]
             }
@@ -606,12 +616,21 @@ class MCPServer:
             if document_id is None:
                 return _error_result("Invalid document resource URI.")
             document = self.repository.get_document(document_id)
+            document_payload = _json_safe(document)
+            extraction = build_document_extraction_snapshot(
+                self.repository.get_case_detail(document.case_id) if document is not None else None,
+                document_id,
+                case_id=document.case_id if document is not None else None,
+            )
+            if extraction is not None:
+                document_payload = dict(document_payload)
+                document_payload["extraction"] = extraction
             return {
                 "contents": [
                     {
                         "uri": uri,
                         "mimeType": "application/json",
-                        "text": json.dumps(_json_safe(document), ensure_ascii=False),
+                        "text": json.dumps(document_payload, ensure_ascii=False),
                     }
                 ]
             }

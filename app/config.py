@@ -30,7 +30,11 @@ class Settings:
     insforge_storage_bucket: str | None = None
     insforge_storage_namespace: str | None = None
     insforge_auth_jwks_url: str | None = None
+    insforge_auth_issuer_url: str | None = None
+    insforge_auth_audience: str | None = None
     insforge_mcp_base_url: str | None = None
+    customer_default_slug: str | None = None
+    customer_default_name: str | None = None
     notification_webhook_url: str | None = None
     notification_webhook_username: str | None = None
     notification_webhook_avatar_url: str | None = None
@@ -112,7 +116,11 @@ def load_settings() -> Settings:
         insforge_storage_bucket=os.getenv("INSFORGE_STORAGE_BUCKET", "").strip() or None,
         insforge_storage_namespace=os.getenv("INSFORGE_STORAGE_NAMESPACE", "").strip() or None,
         insforge_auth_jwks_url=os.getenv("INSFORGE_AUTH_JWKS_URL", "").strip() or None,
+        insforge_auth_issuer_url=os.getenv("INSFORGE_AUTH_ISSUER_URL", "").strip() or None,
+        insforge_auth_audience=os.getenv("INSFORGE_AUTH_AUDIENCE", "").strip() or None,
         insforge_mcp_base_url=os.getenv("INSFORGE_MCP_BASE_URL", "").strip() or None,
+        customer_default_slug=os.getenv("CUSTOMER_DEFAULT_SLUG", "").strip() or None,
+        customer_default_name=os.getenv("CUSTOMER_DEFAULT_NAME", "").strip() or None,
         notification_webhook_url=os.getenv("NOTIFICATION_WEBHOOK_URL", "").strip() or None,
         notification_webhook_username=os.getenv("NOTIFICATION_WEBHOOK_USERNAME", "").strip() or None,
         notification_webhook_avatar_url=os.getenv("NOTIFICATION_WEBHOOK_AVATAR_URL", "").strip() or None,

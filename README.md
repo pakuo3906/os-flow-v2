@@ -46,6 +46,9 @@ O's flow V2 is the next production-oriented version of O's flow.
 - SQLite repository scaffold is in place.
 - Local storage adapter scaffold is in place.
 - Runtime adapter selection is centralized so SQLite/local remain the defaults while future backends can be swapped in behind a single factory.
+- Admin overview now exposes InsForge readiness flags so the future production backend can be configured incrementally without changing the core flow.
+- `GET /admin/backends` exposes the same InsForge readiness view in a compact API form for future setup screens and operator checks.
+- `GET /admin/react-admin` exposes a React-admin-friendly manifest so the future O's flow Admin app can be scaffolded without reinterpreting the current resource map.
 - Repository-backed business query tools are available as a reusable MCP-facing layer.
 - A stdio MCP server entrypoint is available for local and agent-hosted use.
 - A minimal `/mcp` HTTP transport is available through the existing FastAPI app.
@@ -69,8 +72,11 @@ O's flow V2 is the next production-oriented version of O's flow.
 - `GET /admin/activity` exposes a merged admin timeline for cases, documents, operation logs, and notification deliveries, with kind/case/document filters for admin UI use.
 - `GET /admin/dashboard` combines the overview, recent items, activity timeline, and notification delivery summary for the first admin landing page.
 - `GET /admin` exposes a lightweight HTML admin landing page that links to the admin APIs and surfaces the current snapshot.
-- `GET /admin/resources` lists the current admin-facing resource manifest for React-admin style integration.
-- `GET /admin/ui` exposes a lightweight browser-facing admin UI shell that fetches the dashboard and resource manifest.
+- `GET /admin/resources` lists the current admin-facing resource manifest for React-admin style integration, including fields, form metadata, sorting, supported operations, supported actions, detail keys, and the standard `/cases` list path.
+- `GET /admin/ui` exposes a lightweight browser-facing admin UI shell that fetches the dashboard, resource manifest, browsable resource data, resource details, a resource action bar, a simple case editor backed by `PATCH /cases/{case_id}`, document actions for reassign/reprocess/delete, notification summary/trends/alerts/report views, and case list filters for due date, invoice state, and output state.
+- `GET /admin/demo-pack` exposes a ready-to-run LINEÁèæÂ†¥Êï¥ÁêÜ„Éë„ÉÉ„ÇØ guide so the minimal demo flow can be reviewed before real data is used.
+- `GET /admin/resources` and `GET /admin/react-admin` now also surface `invoices` and `missing_submissions` so the future admin screen can show cases, documents, invoices, and submission gaps together.
+- The admin UI now includes a demo-pack panel that links to the demo guide, missing-submissions view, and invoices view for quick operator review.
 - Ingestion service scaffold is in place.
 - Processing job ledger and API visibility are in place.
 - Dockerfile is in place for containerized API startup.
@@ -118,17 +124,29 @@ The alerts endpoint returns only the trend buckets that cross the configured fai
 The report endpoint bundles summary, trends, and alerts into one response for dashboards or ops pages.
 The report also lifts the key summary fields, latest delivery times, and attention targets to the top level for quick access.
 The markdown report mirrors the same data in a human-readable format for Slack, email, or quick copy/paste sharing.
-- Basic automatic text extraction is in place for text, HTML, JSON, DOCX, best-effort PDF files, and optional image OCR routing.
+- Basic automatic text extraction is in place for text, HTML, JSON, DOCX, best-effort PDF files with optional library-backed parsing, and optional image OCR routing with lightweight preprocessing, orientation correction, and contrast normalization for better OCR readiness.
+- Optional helper packages for extraction upgrades are documented in `requirements.txt` (`pypdf`, `pdfplumber`, `pdf2image`, `Pillow`, `pytesseract`).
+- `GET /admin/overview` and `GET /admin/backends` now also surface extraction capability readiness so operators can tell which optional parsing and OCR helpers are available, including the composite readiness flags for PDF text parsing, image OCR, and scanned PDF OCR.
+- Ingestion and reprocess flows now keep extraction provenance in RAG metadata so operators can trace which extraction engine produced each reusable text artifact.
+- `GET /cases/{case_id}`, `GET /documents`, and `GET /documents/{document_id}` now include the latest extraction snapshot for each document when a reusable text artifact exists.
+- The admin document tool now also shows the latest extraction summary after loading a document.
+- The admin resource browser now also shows an `extraction` column in the documents list.
+- The admin recent documents panel now also includes extraction snapshots.
 - A chat-ingestion API scaffold is in place so Discord/LINE adapters can hand off messages into the shared ledger pipeline.
 - Connector-specific ingestion endpoints are also available under `/connectors/discord/chat-ingestions` and `/connectors/line/chat-ingestions` so external chat adapters can stay separate from the core ingestion path.
 - A LINE webhook bridge is also available at `/connectors/line/webhook` for signed LINE Messaging API events, including text and file/media ingestion.
 - LINE media events without a case code can fall back to the `LINE_INBOX_CASE_CODE` triage bucket, which defaults to `LINE-INBOX`.
-- LINE sticker and location messages are also stored as simple text snapshots in the inbox bucket so non-file business notes are not lost.
+- Common config and documentation text formats such as `.toml`, `.ini`, `.cfg`, `.env`, `.conf`, `.properties`, `.sql`, `.rst`, `.adoc`, `.asciidoc`, `.markdown`, `.mdown`, `.mdx`, `.mkdn`, `.org`, `.textile`, `.wiki`, `.text`, `.ics`, `.ical`, `.odp`, `.odg`, `.fodp`, `.fodg`, `.fodt`, `.fods`, `.pptx`, `.potx`, `.potm`, `.ppam`, `.ppsm`, `.xltx`, `.xltm`, `.xlam`, `.docm`, `.dotx`, `.dotm`, `.epub`, `.emlx`, `.mht`, `.mhtml`, `.mbox`, `.svg`, `.svgz`, and gzipped / bzipped / xz-compressed / tar-wrapped / ZIP-family text such as `.csv.gz` / `.json.gz` / `.txt.bz2` / `.txt.xz` / `.tar` / `.tgz` / `.tbz2` / `.txz` / `.zip` / `.jar` / `.war` / `.ear` are treated as text-like for extraction, while `.vcf` / `.vcard` contact cards are normalized into searchable contact fields, `.srt` / `.vtt` subtitle files are normalized into searchable caption text, and SQL MIME types are treated as plain text too.
+- LINE sticker and location messages are stored as simple text snapshots in the inbox bucket so non-file business notes are not lost, and structured sticker/location metadata is preserved in operation logs for later filtering and audit.
+- JSONL / NDJSON files are extracted line by line so structured event dumps stay searchable without extra tooling.
 - LINE follow-style non-message events are also stored as JSON snapshots in the inbox bucket so contact events are not lost.
 - LINE join and leave events are also stored as JSON snapshots in the inbox bucket so group membership changes are not lost.
 - LINE memberJoined and memberLeft events are also stored as JSON snapshots with readable summaries.
-- LINE postback and beacon events are also stored as JSON snapshots so interaction events are not lost.
-- LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries.
+- LINE postback and beacon events are also stored as JSON snapshots with readable summaries so interaction details are easy to scan.
+- LINE accountLink and videoPlayComplete events are also stored as JSON snapshots with readable summaries so connection and playback details stay visible.
+- LINE message webhook logs also preserve reply tokens, redelivery flags, and quoted message IDs so retry and reply diagnostics stay visible.
+- `/line-webhooks/activity` and `/line-webhooks/pending` also surface the same LINE webhook helper metadata so operators can inspect reply and retry context without opening raw JSON.
+- `/line-webhooks/report` and `/line-webhooks/alerts` now include the same latest-pending helper metadata in both JSON and Markdown forms.
 - Pending LINE retries and non-message snapshots now keep searchable operation-log metadata as well.
 - LINE webhook accept / skip / signature-failure outcomes are also recorded in the operation log for later review.
 - Pending LINE video/audio items keep the original event JSON in the operation log so they can be retried later through `/line-webhooks/retry-pending`.
@@ -144,7 +162,36 @@ The markdown report mirrors the same data in a human-readable format for Slack, 
 - `python -m app.cli.notification_worker line-webhook-alerts --deliver-to auto` can render or deliver backlog alerts through the existing notification routes.
 - Video and audio events can surface as `pending` while LINE is still preparing the binary content.
 - FastAPI health endpoint scaffold is in place.
-- The local test suite is passing in the local venv (99 tests at the time of this update).
+- The local test suite is passing in the local venv (183 tests at the time of this update).
+- MCP resource reads for case and document detail now include extraction snapshots so the agent-facing surface matches the API/admin views.
+
+## LINEÁèæÂ†¥Êï¥ÁêÜ„Éë„ÉÉ„ÇØ
+
+The repository now includes a minimal demo pack for checking the full LINE field-organization flow from data intake to admin review.
+
+```powershell
+.\.venv\Scripts\python.exe -m app.cli.demo_pack seed
+```
+
+The command seeds four sample cases with documents, invoice states, and submission states that are safe to inspect through the admin surface.
+
+After seeding, open:
+
+- `http://127.0.0.1:8000/admin/ui`
+- `http://127.0.0.1:8000/admin/demo-pack`
+- `http://127.0.0.1:8000/admin/resources`
+- `http://127.0.0.1:8000/admin/react-admin`
+- `http://127.0.0.1:8000/admin/invoices`
+- `http://127.0.0.1:8000/admin/missing-submissions`
+
+Suggested operator flow:
+
+1. Seed the demo pack.
+2. Confirm the admin UI shows the demo-pack card.
+3. Check cases, documents, invoices, and missing submissions in the admin surface.
+4. Switch to real data ingestion with `/ingestions/upload` or `/connectors/line/chat-ingestions` once the demo looks correct.
+
+`scripts/seed_demo_pack.ps1` is a Windows-friendly wrapper for the same seed command.
 
 ## Notification worker
 
@@ -210,3 +257,40 @@ docker compose up api
 ```
 
 To run a one-off notification digest job, report, LINE webhook report job, or LINE webhook alert job, use the `notification-worker`, `notification-report`, `notification-line-webhook-report`, or `notification-line-webhook-alerts` service as needed.
+
+## LINEåªèÍêÆóùÉpÉbÉN
+
+The repository now includes a minimal demo pack for checking the full LINE field-organization flow from data intake to admin review.
+
+```powershell
+.\.venv\Scripts\python.exe -m app.cli.demo_pack seed
+```
+
+After seeding, open:
+
+- `http://127.0.0.1:8000/admin/ui`
+- `http://127.0.0.1:8000/admin/demo-pack`
+- `http://127.0.0.1:8000/admin/resources`
+- `http://127.0.0.1:8000/admin/react-admin`
+- `http://127.0.0.1:8000/admin/invoices`
+- `http://127.0.0.1:8000/admin/missing-submissions`
+
+Suggested operator flow:
+
+1. Seed the demo pack.
+2. Confirm the admin UI shows the demo-pack card.
+3. Check cases, documents, invoices, and missing submissions in the admin surface.
+4. Switch to real data ingestion with `/ingestions/upload` or `/connectors/line/chat-ingestions` once the demo looks correct.
+
+## React-admin scaffold
+
+A manifest-driven React-admin scaffold now lives in `frontend/react-admin-app/`.
+
+```powershell
+cd frontend/react-admin-app
+npm install
+$env:VITE_API_BASE_URL = "http://127.0.0.1:8000"
+npm run dev
+```
+
+The app loads `/admin/react-admin` at startup and exposes the manifest-backed cases, documents, invoices, missing-submissions, notification-deliveries, and operation-logs surfaces.

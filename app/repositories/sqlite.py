@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.request_context import build_customer_scope_metadata, get_customer_scope
 from app.domain.models import (
     Artifact,
     Case,
@@ -26,14 +27,52 @@ def _normalize_pagination(limit: int, offset: int, *, max_limit: int = 100) -> t
     return max(1, min(limit, max_limit)), max(0, offset)
 
 
+def _current_customer_scope_identity() -> tuple[str, str] | None:
+    scope = get_customer_scope()
+    if not scope or not scope.get("ready"):
+        return None
+    slug = scope.get("effective_slug")
+    name = scope.get("effective_name")
+    if not slug or not name:
+        return None
+    return str(slug), str(name)
+
+
+def _current_customer_scope_metadata() -> dict[str, object] | None:
+    scope = get_customer_scope()
+    if not scope or not scope.get("ready"):
+        return None
+    slug = scope.get("effective_slug")
+    name = scope.get("effective_name")
+    if not slug or not name:
+        return None
+    return {
+        "slug": str(slug),
+        "name": str(name),
+        "scope": build_customer_scope_metadata(scope),
+    }
+
+
 class SQLiteRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.database_path, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON;")
+        self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON;")
+        self._closed = False
         self._init_schema()
+        self._ensure_case_customer_columns()
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if self._closed:
+            raise RuntimeError("SQLiteRepository is closed.")
+        return self._connection
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
 
     def __enter__(self) -> "SQLiteRepository":
         return self
@@ -42,7 +81,10 @@ class SQLiteRepository:
         self.close()
 
     def close(self) -> None:
-        self.connection.close()
+        if self._closed:
+            return
+        self._connection.close()
+        self._closed = True
 
     def _init_schema(self) -> None:
         self.connection.executescript(
@@ -163,6 +205,41 @@ class SQLiteRepository:
         )
         self.connection.commit()
 
+    def _ensure_case_customer_columns(self) -> None:
+        existing_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(cases)").fetchall()
+        }
+        if "customer_slug" not in existing_columns:
+            self.connection.execute("ALTER TABLE cases ADD COLUMN customer_slug TEXT")
+        if "customer_name" not in existing_columns:
+            self.connection.execute("ALTER TABLE cases ADD COLUMN customer_name TEXT")
+        self.connection.execute("CREATE INDEX IF NOT EXISTS idx_cases_customer_slug ON cases(customer_slug, updated_at)")
+        self.connection.commit()
+
+    def _scope_case_row(self, row: sqlite3.Row | None) -> bool:
+        if row is None:
+            return False
+        scope = _current_customer_scope_identity()
+        if scope is None:
+            return True
+        return (row["customer_slug"] or None) == scope[0]
+
+    def _apply_case_scope_filters(self, clauses: list[str], params: list[object], *, table_alias: str = "cases") -> None:
+        scope = _current_customer_scope_identity()
+        if scope is None:
+            return
+        clauses.append(f"{table_alias}.customer_slug = ?")
+        params.append(scope[0])
+
+    def _scope_case_assignment(self, existing_row: sqlite3.Row | None = None) -> tuple[str | None, str | None]:
+        scope = _current_customer_scope_identity()
+        if scope is not None:
+            return scope
+        if existing_row is not None:
+            return existing_row["customer_slug"], existing_row["customer_name"]
+        return None, None
+
     def upsert_case(
         self,
         *,
@@ -176,27 +253,56 @@ class SQLiteRepository:
         last_processed_at: str | None = None,
     ) -> Case:
         now = _now()
-        row = self.connection.execute("SELECT id FROM cases WHERE case_code = ?", (case_code,)).fetchone()
+        row = self.connection.execute("SELECT * FROM cases WHERE case_code = ?", (case_code,)).fetchone()
+        customer_scope = _current_customer_scope_identity()
+        if row is not None and customer_scope is not None and (row["customer_slug"] or None) not in {None, customer_scope[0]}:
+            raise RuntimeError(f"Case not found after upsert: {case_code}")
+        customer_slug, customer_name = self._scope_case_assignment(row)
         if row:
             self.connection.execute(
                 """
                 UPDATE cases
-                SET title = ?, client_name = ?, status = ?, due_date = ?, invoice_status = ?,
+                SET title = ?, client_name = ?, customer_slug = ?, customer_name = ?, status = ?, due_date = ?, invoice_status = ?,
                     output_status = ?, updated_at = ?, last_processed_at = ?
                 WHERE case_code = ?
                 """,
-                (title, client_name, status, due_date, invoice_status, output_status, now, last_processed_at, case_code),
+                (
+                    title,
+                    client_name,
+                    customer_slug,
+                    customer_name,
+                    status,
+                    due_date,
+                    invoice_status,
+                    output_status,
+                    now,
+                    last_processed_at,
+                    case_code,
+                ),
             )
         else:
             self.connection.execute(
                 """
                 INSERT INTO cases (
-                    case_code, title, client_name, status, due_date, invoice_status,
+                    case_code, title, client_name, customer_slug, customer_name, status, due_date, invoice_status,
                     output_status, created_at, updated_at, last_processed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (case_code, title, client_name, status, due_date, invoice_status, output_status, now, now, last_processed_at),
+                (
+                    case_code,
+                    title,
+                    client_name,
+                    customer_slug,
+                    customer_name,
+                    status,
+                    due_date,
+                    invoice_status,
+                    output_status,
+                    now,
+                    now,
+                    last_processed_at,
+                ),
             )
         self.connection.commit()
         return self._get_case_by_code(case_code)
@@ -216,6 +322,11 @@ class SQLiteRepository:
     ) -> Case:
         updates = []
         params: list[object] = []
+        existing_row = self.connection.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+        if existing_row is None:
+            raise RuntimeError(f"Case not found: {case_id}")
+        if not self._scope_case_row(existing_row):
+            raise RuntimeError(f"Case not found: {case_id}")
         if title is not None:
             updates.append("title = ?")
             params.append(title)
@@ -277,7 +388,7 @@ class SQLiteRepository:
 
     def get_case(self, case_id: int) -> Case | None:
         row = self.connection.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
-        return self._row_to_case(row) if row else None
+        return self._row_to_case(row) if self._scope_case_row(row) else None
 
     def get_case_detail(self, case_id: int) -> CaseDetail | None:
         case = self.get_case(case_id)
@@ -307,7 +418,7 @@ class SQLiteRepository:
 
     def _get_case_by_code(self, case_code: str) -> Case:
         row = self.connection.execute("SELECT * FROM cases WHERE case_code = ?", (case_code,)).fetchone()
-        if row is None:
+        if row is None or not self._scope_case_row(row):
             raise RuntimeError(f"Case not found after upsert: {case_code}")
         return self._row_to_case(row)
 
@@ -324,6 +435,7 @@ class SQLiteRepository:
         limit, offset = _normalize_pagination(limit, offset)
         clauses = []
         params: list[object] = []
+        self._apply_case_scope_filters(clauses, params)
         if query:
             clauses.append("(case_code LIKE ? OR title LIKE ? OR client_name LIKE ?)")
             like = f"%{query}%"
@@ -358,6 +470,7 @@ class SQLiteRepository:
     ) -> int:
         clauses = []
         params: list[object] = []
+        self._apply_case_scope_filters(clauses, params)
         if query:
             clauses.append("(case_code LIKE ? OR title LIKE ? OR client_name LIKE ?)")
             like = f"%{query}%"
@@ -384,6 +497,7 @@ class SQLiteRepository:
         limit, offset = _normalize_pagination(limit, offset)
         clauses = ["due_date IS NOT NULL", "due_date <= ?"]
         params: list[object] = [until_date]
+        self._apply_case_scope_filters(clauses, params)
         if status:
             clauses.append("status = ?")
             params.append(status)
@@ -396,6 +510,7 @@ class SQLiteRepository:
     def count_due_tasks(self, until_date: str, status: str | None = None) -> int:
         clauses = ["due_date IS NOT NULL", "due_date <= ?"]
         params: list[object] = [until_date]
+        self._apply_case_scope_filters(clauses, params)
         if status:
             clauses.append("status = ?")
             params.append(status)
@@ -413,6 +528,7 @@ class SQLiteRepository:
         limit, offset = _normalize_pagination(limit, offset)
         clauses = []
         params: list[object] = []
+        self._apply_case_scope_filters(clauses, params)
         if invoice_status:
             clauses.append("invoice_status = ?")
             params.append(invoice_status)
@@ -430,6 +546,7 @@ class SQLiteRepository:
     def count_invoices(self, invoice_status: str | None = None, due_before: str | None = None) -> int:
         clauses = []
         params: list[object] = []
+        self._apply_case_scope_filters(clauses, params)
         if invoice_status:
             clauses.append("invoice_status = ?")
             params.append(invoice_status)
@@ -455,6 +572,9 @@ class SQLiteRepository:
         source_path: str | None = None,
     ) -> Document:
         now = _now()
+        case = self.get_case(case_id)
+        if case is None:
+            raise RuntimeError(f"Case not found: {case_id}")
         row = self.connection.execute(
             """
             SELECT * FROM documents
@@ -490,6 +610,8 @@ class SQLiteRepository:
         row = self.connection.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
         if row is None:
             raise RuntimeError(f"Document not found: {document_id}")
+        if self.get_case(row["case_id"]) is None:
+            raise RuntimeError(f"Document not found: {document_id}")
         return self._row_to_document(row)
 
     def list_documents(
@@ -506,8 +628,9 @@ class SQLiteRepository:
         clauses = []
         params: list[object] = []
         if case_id is not None:
-            clauses.append("case_id = ?")
+            clauses.append("documents.case_id = ?")
             params.append(case_id)
+        self._apply_case_scope_filters(clauses, params, table_alias="cases")
         if source_type is not None:
             clauses.append("source_type = ?")
             params.append(source_type)
@@ -518,10 +641,10 @@ class SQLiteRepository:
             clauses.append("(filename LIKE ? OR source_path LIKE ? OR storage_key LIKE ?)")
             like = f"%{query}%"
             params.extend([like, like, like])
-        sql = "SELECT * FROM documents"
+        sql = "SELECT documents.* FROM documents JOIN cases ON cases.id = documents.case_id"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY documents.updated_at DESC, documents.id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = self.connection.execute(sql, params).fetchall()
         return [self._row_to_document(row) for row in rows]
@@ -537,8 +660,9 @@ class SQLiteRepository:
         clauses = []
         params: list[object] = []
         if case_id is not None:
-            clauses.append("case_id = ?")
+            clauses.append("documents.case_id = ?")
             params.append(case_id)
+        self._apply_case_scope_filters(clauses, params, table_alias="cases")
         if source_type is not None:
             clauses.append("source_type = ?")
             params.append(source_type)
@@ -549,7 +673,7 @@ class SQLiteRepository:
             clauses.append("(filename LIKE ? OR source_path LIKE ? OR storage_key LIKE ?)")
             like = f"%{query}%"
             params.extend([like, like, like])
-        sql = "SELECT COUNT(*) AS total FROM documents"
+        sql = "SELECT COUNT(*) AS total FROM documents JOIN cases ON cases.id = documents.case_id"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         row = self.connection.execute(sql, params).fetchone()
@@ -557,6 +681,7 @@ class SQLiteRepository:
 
     def mark_document_deleted(self, document_id: int) -> None:
         now = _now()
+        document = self.get_document(document_id)
         self.connection.execute(
             """
             UPDATE documents
@@ -589,6 +714,8 @@ class SQLiteRepository:
         if source_case_id_row is None:
             raise RuntimeError(f"Document not found: {document_id}")
         source_case_id = int(source_case_id_row["case_id"])
+        if self.get_case(source_case_id) is None or self.get_case(case_id) is None:
+            raise RuntimeError(f"Document not found: {document_id}")
         cursor = self.connection.execute(
             """
             UPDATE documents
@@ -860,7 +987,11 @@ class SQLiteRepository:
         metadata_json: dict[str, object] | None = None,
     ) -> OperationLog:
         now = _now()
-        metadata = json.dumps(metadata_json or {}, ensure_ascii=False)
+        metadata_dict = dict(metadata_json or {})
+        customer_scope = build_customer_scope_metadata(get_customer_scope())
+        if customer_scope is not None and "customer_scope" not in metadata_dict:
+            metadata_dict["customer_scope"] = customer_scope
+        metadata = json.dumps(metadata_dict, ensure_ascii=False)
         cursor = self.connection.execute(
             """
             INSERT INTO operation_logs (
@@ -905,6 +1036,10 @@ class SQLiteRepository:
         rows = self.connection.execute(sql, params).fetchall()
         return [self._row_to_operation_log(row) for row in rows]
 
+    def get_operation_log(self, operation_log_id: int) -> OperationLog | None:
+        row = self.connection.execute("SELECT * FROM operation_logs WHERE id = ?", (operation_log_id,)).fetchone()
+        return self._row_to_operation_log(row) if row is not None else None
+
     def count_operation_logs(
         self,
         *,
@@ -944,7 +1079,11 @@ class SQLiteRepository:
         metadata_json: dict[str, object] | None = None,
     ) -> NotificationDeliveryLog:
         now = _now()
-        metadata = json.dumps(metadata_json or {}, ensure_ascii=False)
+        metadata_dict = dict(metadata_json or {})
+        customer_scope = build_customer_scope_metadata(get_customer_scope())
+        if customer_scope is not None and "customer_scope" not in metadata_dict:
+            metadata_dict["customer_scope"] = customer_scope
+        metadata = json.dumps(metadata_dict, ensure_ascii=False)
         cursor = self.connection.execute(
             """
             INSERT INTO notification_delivery_logs (
@@ -1005,6 +1144,13 @@ class SQLiteRepository:
         params.extend([limit, offset])
         rows = self.connection.execute(sql, params).fetchall()
         return [self._row_to_notification_delivery_log(row) for row in rows]
+
+    def get_notification_delivery(self, notification_delivery_id: int) -> NotificationDeliveryLog | None:
+        row = self.connection.execute(
+            "SELECT * FROM notification_delivery_logs WHERE id = ?",
+            (notification_delivery_id,),
+        ).fetchone()
+        return self._row_to_notification_delivery_log(row) if row is not None else None
 
     def count_notification_deliveries(
         self,
@@ -1103,6 +1249,8 @@ class SQLiteRepository:
             case_code=row["case_code"],
             title=row["title"],
             client_name=row["client_name"],
+            customer_slug=row["customer_slug"],
+            customer_name=row["customer_name"],
             status=row["status"],
             due_date=row["due_date"],
             invoice_status=row["invoice_status"],

@@ -19,6 +19,175 @@ from app.services.chat_connectors import (
 from app.services.ingestion import IngestionService
 
 
+def build_line_event_summary(event: dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "unknown")
+    source = event.get("source") or {}
+    source_type = str(source.get("type") or "")
+    source_id = source.get("groupId") or source.get("roomId") or source.get("userId") or ""
+    summary = f"LINE {event_type} event"
+    if source_type or source_id:
+        summary += f" from {source_type or 'unknown'}"
+        if source_id:
+            summary += f" {source_id}"
+    if event_type == "unsend":
+        unsend = event.get("unsend") or {}
+        unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
+        if unsend_message_id:
+            summary += f" for message {unsend_message_id}"
+    elif event_type == "postback":
+        postback = event.get("postback") or {}
+        data = str(postback.get("data") or "").strip()
+        if data:
+            summary += f" data {data}"
+        params = postback.get("params") or {}
+        if isinstance(params, dict) and params:
+            details = ", ".join(f"{key}={value}" for key, value in sorted(params.items()))
+            summary += f" params ({details})"
+    elif event_type == "beacon":
+        beacon = event.get("beacon") or {}
+        hwid = str(beacon.get("hwid") or "").strip()
+        dm = str(beacon.get("dm") or "").strip()
+        if hwid:
+            summary += f" hwid {hwid}"
+        if dm:
+            summary += f" dm {dm}"
+    elif event_type == "accountLink":
+        link = event.get("link") or {}
+        result = str(link.get("result") or "").strip()
+        nonce = str(link.get("nonce") or "").strip()
+        if result:
+            summary += f" result {result}"
+        if nonce:
+            summary += f" nonce {nonce}"
+    elif event_type == "videoPlayComplete":
+        video_play_complete = event.get("videoPlayComplete") or {}
+        tracking_id = str(video_play_complete.get("trackingId") or "").strip()
+        if tracking_id:
+            summary += f" trackingId {tracking_id}"
+    elif event_type == "message":
+        message = event.get("message") or {}
+        message_type = str(message.get("type") or "").strip()
+        if message_type:
+            summary += f" {message_type}"
+        file_name = str(message.get("fileName") or "").strip()
+        if file_name:
+            summary += f" fileName {file_name}"
+        content_provider = event.get("contentProvider") or {}
+        if isinstance(content_provider, dict):
+            content_provider_type = str(content_provider.get("type") or "").strip()
+            if content_provider_type:
+                summary += f" contentProvider {content_provider_type}"
+        quoted_message_id = str(message.get("quotedMessageId") or "").strip()
+        if quoted_message_id:
+            summary += f" quotedMessageId {quoted_message_id}"
+    return summary
+
+
+def build_line_event_extra_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("type") or "unknown")
+    extra_metadata: dict[str, Any] = {}
+    reply_token = str(event.get("replyToken") or "").strip()
+    if reply_token:
+        extra_metadata["reply_token"] = reply_token
+    delivery_context = event.get("deliveryContext") or {}
+    if isinstance(delivery_context, dict) and "isRedelivery" in delivery_context:
+        extra_metadata["is_redelivery"] = bool(delivery_context.get("isRedelivery"))
+    if event_type == "unsend":
+        unsend = event.get("unsend") or {}
+        unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
+        if unsend_message_id:
+            extra_metadata["unsend_message_id"] = unsend_message_id
+    elif event_type == "postback":
+        postback = event.get("postback") or {}
+        data = str(postback.get("data") or "").strip()
+        if data:
+            extra_metadata["postback_data"] = data
+        params = postback.get("params") or {}
+        if isinstance(params, dict) and params:
+            extra_metadata["postback_params"] = {
+                str(key): value for key, value in sorted(params.items())
+            }
+    elif event_type == "beacon":
+        beacon = event.get("beacon") or {}
+        hwid = str(beacon.get("hwid") or "").strip()
+        dm = str(beacon.get("dm") or "").strip()
+        if hwid:
+            extra_metadata["beacon_hwid"] = hwid
+        if dm:
+            extra_metadata["beacon_dm"] = dm
+    elif event_type == "accountLink":
+        link = event.get("link") or {}
+        result = str(link.get("result") or "").strip()
+        nonce = str(link.get("nonce") or "").strip()
+        if result:
+            extra_metadata["account_link_result"] = result
+        if nonce:
+            extra_metadata["account_link_nonce"] = nonce
+    elif event_type == "videoPlayComplete":
+        video_play_complete = event.get("videoPlayComplete") or {}
+        tracking_id = str(video_play_complete.get("trackingId") or "").strip()
+        if tracking_id:
+            extra_metadata["video_play_complete_tracking_id"] = tracking_id
+    elif event_type == "message":
+        message = event.get("message") or {}
+        quoted_message_id = str(message.get("quotedMessageId") or "").strip()
+        if quoted_message_id:
+            extra_metadata["quoted_message_id"] = quoted_message_id
+    return extra_metadata
+
+
+def build_line_message_extra_metadata(event: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+    extra_metadata = build_line_event_extra_metadata(event)
+    quote_token = str(message.get("quoteToken") or event.get("quoteToken") or "").strip()
+    if quote_token:
+        extra_metadata["quote_token"] = quote_token
+    quoted_message_id = str(message.get("quotedMessageId") or event.get("quotedMessageId") or "").strip()
+    if quoted_message_id:
+        extra_metadata["quoted_message_id"] = quoted_message_id
+    file_name = str(message.get("fileName") or "").strip()
+    if file_name:
+        extra_metadata["file_name"] = file_name
+    content_provider = event.get("contentProvider") or {}
+    if isinstance(content_provider, dict):
+        content_provider_type = str(content_provider.get("type") or "").strip()
+        if content_provider_type:
+            extra_metadata["content_provider_type"] = content_provider_type
+        original_content_url = str(content_provider.get("originalContentUrl") or "").strip()
+        preview_image_url = str(content_provider.get("previewImageUrl") or "").strip()
+        if original_content_url:
+            extra_metadata["content_provider_original_content_url"] = original_content_url
+        if preview_image_url:
+            extra_metadata["content_provider_preview_image_url"] = preview_image_url
+    message_type = str(message.get("type") or "").strip()
+    if message_type == "sticker":
+        sticker_id = str(message.get("stickerId") or "").strip()
+        package_id = str(message.get("packageId") or "").strip()
+        sticker_resource_type = str(message.get("stickerResourceType") or "").strip()
+        keywords = message.get("keywords") or []
+        if sticker_id:
+            extra_metadata["sticker_id"] = sticker_id
+        if package_id:
+            extra_metadata["package_id"] = package_id
+        if sticker_resource_type:
+            extra_metadata["sticker_resource_type"] = sticker_resource_type
+        if isinstance(keywords, list) and keywords:
+            extra_metadata["keywords"] = [str(keyword) for keyword in keywords if str(keyword).strip()]
+    elif message_type == "location":
+        title = str(message.get("title") or "").strip()
+        address = str(message.get("address") or "").strip()
+        latitude = message.get("latitude")
+        longitude = message.get("longitude")
+        if title:
+            extra_metadata["location_title"] = title
+        if address:
+            extra_metadata["location_address"] = address
+        if latitude is not None:
+            extra_metadata["location_latitude"] = latitude
+        if longitude is not None:
+            extra_metadata["location_longitude"] = longitude
+    return extra_metadata
+
+
 @dataclass(frozen=True)
 class LineWebhookItemResult:
     event_type: str
@@ -27,6 +196,7 @@ class LineWebhookItemResult:
     case_id: int | None = None
     document_id: int | None = None
     reason: str | None = None
+    content_type: str | None = None
     event_json: dict[str, Any] | None = None
 
 
@@ -89,7 +259,7 @@ class LineWebhookClient:
         if event_type != "message":
             case_code = (self.settings.line_inbox_case_code or "").strip() or "LINE-INBOX"
             source = event.get("source") or {}
-            summary = self._build_non_message_summary(event)
+            summary = build_line_event_summary(event)
             content = self._build_event_snapshot(event)
             filename = f"line-{event_type}.json"
             source_path = f"line/event/{event_type}/{event.get('webhookEventId') or event_type}"
@@ -101,11 +271,7 @@ class LineWebhookClient:
                 "source_type": source.get("type"),
                 "event_json": event,
             }
-            if event_type == "unsend":
-                unsend = event.get("unsend") or {}
-                unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
-                if unsend_message_id:
-                    extra_metadata["unsend_message_id"] = unsend_message_id
+            extra_metadata.update(build_line_event_extra_metadata(event))
             structured_json = build_chat_metadata_json(
                 platform="line",
                 source_path=source_path,
@@ -172,6 +338,7 @@ class LineWebhookClient:
                 status="pending",
                 case_code=case_code,
                 reason=reason,
+                content_type=mime_type,
                 event_json=event,
             )
         if content is None:
@@ -180,6 +347,7 @@ class LineWebhookClient:
                 status="skipped",
                 case_code=case_code,
                 reason=reason or "content_unavailable",
+                content_type=mime_type,
                 event_json=event,
             )
 
@@ -196,6 +364,8 @@ class LineWebhookClient:
                 "message_type": message_type,
                 "file_name": message_file_name or None,
                 "source_type": source.get("type"),
+                "content_type": mime_type,
+                **build_line_message_extra_metadata(event, message),
             },
         )
         result = ingest_chat_payload(
@@ -222,6 +392,7 @@ class LineWebhookClient:
             case_code=case_code,
             case_id=getattr(result, "case_id", None),
             document_id=getattr(result, "document_id", None),
+            content_type=mime_type,
             event_json=event,
         )
 
@@ -318,20 +489,3 @@ class LineWebhookClient:
 
     def _build_event_snapshot(self, event: dict[str, Any]) -> bytes:
         return json.dumps(event, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
-
-    def _build_non_message_summary(self, event: dict[str, Any]) -> str:
-        event_type = str(event.get("type") or "unknown")
-        source = event.get("source") or {}
-        source_type = str(source.get("type") or "")
-        source_id = source.get("groupId") or source.get("roomId") or source.get("userId") or ""
-        summary = f"LINE {event_type} event"
-        if source_type or source_id:
-            summary += f" from {source_type or 'unknown'}"
-            if source_id:
-                summary += f" {source_id}"
-        if event_type == "unsend":
-            unsend = event.get("unsend") or {}
-            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
-            if unsend_message_id:
-                summary += f" for message {unsend_message_id}"
-        return summary

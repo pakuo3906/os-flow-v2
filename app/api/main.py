@@ -7,17 +7,28 @@ from datetime import date
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi import Request
 from pydantic import BaseModel, Field, field_validator
 
 from app.config import load_settings
 from app.domain.models import IngestionRequest
+from app.request_context import reset_customer_scope, set_customer_scope
 from app.services.chat_connectors import (
     build_chat_metadata_json,
     build_discord_source_path,
     build_line_source_path,
 )
+from app.services.document_snapshots import (
+    attach_document_extraction_snapshots,
+    build_document_extraction_snapshot_for_document,
+)
+from app.services.demo_pack import (
+    build_demo_pack_guide,
+    build_missing_submissions_payload,
+)
+from app.services.extraction import get_extraction_capabilities
 from app.services.documents import DocumentService
 from app.services.notification_delivery_report import (
     build_notification_delivery_alerts,
@@ -25,7 +36,12 @@ from app.services.notification_delivery_report import (
     build_notification_delivery_summary,
 )
 from app.services.notification_delivery import render_notification_delivery_report_markdown
-from app.services.line_webhook import LineWebhookClient
+from app.services.line_webhook import (
+    LineWebhookClient,
+    build_line_event_extra_metadata,
+    build_line_event_summary,
+    build_line_message_extra_metadata,
+)
 from app.services.notifications import NotificationService
 from app.services.ingestion import IngestionService
 from app.mcp.http import MCPHttpTransport
@@ -100,12 +116,132 @@ def build_line_webhook_report_payload(
             "attention_reason": attention_reason,
         },
         "pending_backlog_latest": _serialize(pending_backlog_latest[0]) if pending_backlog_latest else None,
+        "pending_backlog_latest_summary": (
+            _line_webhook_helper_metadata(_parse_metadata_json(pending_backlog_latest[0].metadata_json))
+            if pending_backlog_latest
+            else None
+        ),
         "recent_events": _serialize(recent_events),
     }
 
 
 def _set_total_count_header(response: Response, total: int) -> None:
     response.headers["X-Total-Count"] = str(total)
+
+
+def _build_insforge_backend_status(settings) -> dict[str, Any]:  # noqa: ANN001
+    base_url_configured = bool((settings.insforge_base_url or "").strip())
+    api_key_configured = bool((settings.insforge_api_key or "").strip())
+    database_url_configured = bool((settings.insforge_database_url or "").strip())
+    project_id_configured = bool((settings.insforge_project_id or "").strip())
+    storage_bucket_configured = bool((settings.insforge_storage_bucket or "").strip())
+    storage_namespace_configured = bool((settings.insforge_storage_namespace or "").strip())
+    auth_jwks_url_configured = bool((settings.insforge_auth_jwks_url or "").strip())
+    mcp_base_url_configured = bool((settings.insforge_mcp_base_url or "").strip())
+    repository_missing = [
+        name
+        for name, configured in {
+            "INSFORGE_BASE_URL": base_url_configured,
+            "INSFORGE_API_KEY": api_key_configured,
+            "INSFORGE_DATABASE_URL": database_url_configured,
+            "INSFORGE_PROJECT_ID": project_id_configured,
+        }.items()
+        if not configured
+    ]
+    storage_missing = [
+        name
+        for name, configured in {
+            "INSFORGE_BASE_URL": base_url_configured,
+            "INSFORGE_API_KEY": api_key_configured,
+            "INSFORGE_STORAGE_BUCKET": storage_bucket_configured,
+            "INSFORGE_STORAGE_NAMESPACE": storage_namespace_configured,
+        }.items()
+        if not configured
+    ]
+    return {
+        "base_url_configured": base_url_configured,
+        "api_key_configured": api_key_configured,
+        "database_url_configured": database_url_configured,
+        "project_id_configured": project_id_configured,
+        "storage_bucket_configured": storage_bucket_configured,
+        "storage_namespace_configured": storage_namespace_configured,
+        "auth_jwks_url_configured": auth_jwks_url_configured,
+        "mcp_base_url_configured": mcp_base_url_configured,
+        "repository_ready": not repository_missing,
+        "storage_ready": not storage_missing,
+        "repository_missing": repository_missing,
+        "storage_missing": storage_missing,
+    }
+
+
+def _build_auth_backend_status(settings) -> dict[str, Any]:  # noqa: ANN001
+    jwks_url_configured = bool((settings.insforge_auth_jwks_url or "").strip())
+    issuer_url_configured = bool((settings.insforge_auth_issuer_url or "").strip())
+    audience_configured = bool((settings.insforge_auth_audience or "").strip())
+    missing = [
+        name
+        for name, configured in {
+            "INSFORGE_AUTH_JWKS_URL": jwks_url_configured,
+            "INSFORGE_AUTH_ISSUER_URL": issuer_url_configured,
+            "INSFORGE_AUTH_AUDIENCE": audience_configured,
+        }.items()
+        if not configured
+    ]
+    return {
+        "jwks_url_configured": jwks_url_configured,
+        "issuer_url_configured": issuer_url_configured,
+        "audience_configured": audience_configured,
+        "ready": not missing,
+        "missing": missing,
+        "jwks_url": settings.insforge_auth_jwks_url,
+        "issuer_url": settings.insforge_auth_issuer_url,
+        "audience": settings.insforge_auth_audience,
+    }
+
+
+def _build_customer_scope_status(settings) -> dict[str, Any]:  # noqa: ANN001
+    default_slug_configured = bool((settings.customer_default_slug or "").strip())
+    default_name_configured = bool((settings.customer_default_name or "").strip())
+    missing = [
+        name
+        for name, configured in {
+            "CUSTOMER_DEFAULT_SLUG": default_slug_configured,
+            "CUSTOMER_DEFAULT_NAME": default_name_configured,
+        }.items()
+        if not configured
+    ]
+    return {
+        "default_slug_configured": default_slug_configured,
+        "default_name_configured": default_name_configured,
+        "ready": not missing,
+        "missing": missing,
+        "default_slug": settings.customer_default_slug,
+        "default_name": settings.customer_default_name,
+    }
+
+
+def _resolve_customer_scope(request: Request, settings) -> dict[str, Any]:  # noqa: ANN001
+    header_slug = (request.headers.get("X-Oflow-Customer-Slug") or request.headers.get("X-Customer-Slug") or "").strip()
+    header_name = (request.headers.get("X-Oflow-Customer-Name") or request.headers.get("X-Customer-Name") or "").strip()
+    default_slug = (settings.customer_default_slug or "").strip() or None
+    default_name = (settings.customer_default_name or "").strip() or None
+    effective_slug = header_slug or default_slug
+    effective_name = header_name or default_name
+    source = "header" if header_slug or header_name else ("settings" if default_slug or default_name else "unset")
+    return {
+        "source": source,
+        "header_slug": header_slug or None,
+        "header_name": header_name or None,
+        "effective_slug": effective_slug,
+        "effective_name": effective_name,
+        "default_slug": default_slug,
+        "default_name": default_name,
+        "ready": bool(effective_slug and effective_name),
+    }
+
+
+def _build_extraction_backend_status() -> dict[str, bool]:
+    return get_extraction_capabilities()
 
 
 def _parse_optional_json(raw_value: str | None, *, field_name: str, default: Any | None = None) -> Any:
@@ -125,6 +261,28 @@ def _parse_metadata_json(raw_value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _line_webhook_helper_metadata(metadata_json: dict[str, Any]) -> dict[str, Any]:
+    extra_keys = (
+        "reply_token",
+        "is_redelivery",
+        "quoted_message_id",
+        "unsend_message_id",
+        "postback_data",
+        "postback_params",
+        "beacon_hwid",
+        "beacon_dm",
+        "account_link_result",
+        "account_link_nonce",
+        "video_play_complete_tracking_id",
+        "file_name",
+        "content_provider_type",
+        "content_provider_original_content_url",
+        "content_provider_preview_image_url",
+        "content_type",
+    )
+    return {key: metadata_json.get(key) for key in extra_keys if metadata_json.get(key) is not None}
 
 
 def _build_admin_activity_item(
@@ -524,6 +682,16 @@ def create_app() -> FastAPI:
     line_webhook_client = LineWebhookClient(settings, ingestion_service)
 
     app = FastAPI(title="O's flow V2", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.settings = settings
     app.state.repository = repository
     app.state.storage = storage
@@ -531,6 +699,47 @@ def create_app() -> FastAPI:
     app.state.document_service = document_service
     app.state.mcp_transport = mcp_transport
     app.state.line_webhook_client = line_webhook_client
+
+    @app.middleware("http")
+    async def attach_customer_scope(request: Request, call_next):
+        request.state.customer_scope = _resolve_customer_scope(request, settings)
+        token = set_customer_scope(request.state.customer_scope)
+        response = None
+        try:
+            scope = request.state.customer_scope
+            header_slug = scope.get("header_slug")
+            header_name = scope.get("header_name")
+            default_slug = scope.get("default_slug")
+            default_name = scope.get("default_name")
+            if default_slug and header_slug and header_slug != default_slug:
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Customer slug does not match the configured tenant.",
+                        "customer_scope": scope,
+                    },
+                )
+                return response
+            if default_name and header_name and header_name != default_name:
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Customer name does not match the configured tenant.",
+                        "customer_scope": scope,
+                    },
+                )
+                return response
+            response = await call_next(request)
+        finally:
+            reset_customer_scope(token)
+        if response is None:
+            raise RuntimeError("Customer scope middleware did not receive a response.")
+        scope = request.state.customer_scope
+        if scope.get("effective_slug"):
+            response.headers["X-Oflow-Customer-Slug"] = str(scope["effective_slug"])
+        if scope.get("effective_name"):
+            response.headers["X-Oflow-Customer-Name"] = str(scope["effective_name"])
+        return response
 
     def current_repository():
         return app.state.repository
@@ -577,34 +786,56 @@ def create_app() -> FastAPI:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return None
-        event_type = str(event_json.get("type") or "unknown")
-        source = event_json.get("source") or {}
-        source_type = str(source.get("type") or "")
-        source_id = source.get("groupId") or source.get("roomId") or source.get("userId") or ""
-        summary = f"LINE {event_type} event"
-        if source_type or source_id:
-            summary += f" from {source_type or 'unknown'}"
-            if source_id:
-                summary += f" {source_id}"
-        if event_type == "unsend":
-            unsend = event_json.get("unsend") or {}
-            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
-            if unsend_message_id:
-                summary += f" for message {unsend_message_id}"
+        summary = build_line_event_summary(event_json)
+        content_type = getattr(item, "content_type", None)
+        if content_type:
+            summary += f" content_type {content_type}"
         return summary
 
     def _line_event_extra_metadata(item: Any) -> dict[str, Any]:
         event_json = getattr(item, "event_json", None)
         if not isinstance(event_json, dict):
             return {}
-        event_type = str(event_json.get("type") or "unknown")
-        extra_metadata: dict[str, Any] = {}
-        if event_type == "unsend":
-            unsend = event_json.get("unsend") or {}
-            unsend_message_id = unsend.get("messageId") or unsend.get("message_id")
-            if unsend_message_id:
-                extra_metadata["unsend_message_id"] = unsend_message_id
-        return extra_metadata
+        content_type = getattr(item, "content_type", None)
+        if content_type:
+            metadata = {"content_type": content_type}
+        else:
+            metadata = {}
+        message = event_json.get("message")
+        if isinstance(message, dict):
+            metadata.update(build_line_message_extra_metadata(event_json, message))
+            return metadata
+        metadata.update(build_line_event_extra_metadata(event_json))
+        return metadata
+
+    def _line_webhook_extra_metadata(metadata_json: dict[str, Any]) -> dict[str, Any]:
+        extra_keys = (
+            "reply_token",
+            "is_redelivery",
+            "quoted_message_id",
+            "unsend_message_id",
+            "postback_data",
+            "postback_params",
+            "beacon_hwid",
+            "beacon_dm",
+            "account_link_result",
+            "account_link_nonce",
+            "video_play_complete_tracking_id",
+            "sticker_id",
+            "package_id",
+            "sticker_resource_type",
+            "keywords",
+            "file_name",
+            "content_provider_type",
+            "content_provider_original_content_url",
+            "content_provider_preview_image_url",
+            "content_type",
+            "location_title",
+            "location_address",
+            "location_latitude",
+            "location_longitude",
+        )
+        return {key: metadata_json.get(key) for key in extra_keys if metadata_json.get(key) is not None}
 
     def _line_webhook_event_types() -> tuple[str, ...]:
         return (
@@ -641,6 +872,7 @@ def create_app() -> FastAPI:
             "reason": metadata_json.get("reason"),
             "retry_of_log_id": metadata_json.get("retry_of_log_id"),
             "event_json": event_json,
+            **_line_webhook_extra_metadata(metadata_json),
         }
 
     @app.get("/healthz")
@@ -708,11 +940,12 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/meta")
-    def meta() -> dict[str, str]:
+    def meta(request: Request) -> dict[str, object]:
         return {
             "environment": settings.app_env,
             "database_path": str(settings.database_path),
             "storage_root": str(settings.storage_root),
+            "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
         }
 
     @app.get("/summary")
@@ -729,7 +962,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/admin/overview")
-    def admin_overview() -> dict[str, object]:
+    def admin_overview(request: Request) -> dict[str, object]:
         repository = current_repository()
         case_statuses = ("new", "in_progress", "completed")
         invoice_statuses = ("unbilled", "pending")
@@ -740,16 +973,11 @@ def create_app() -> FastAPI:
                 "app_env": settings.app_env,
                 "repository_backend": settings.repository_backend,
                 "storage_backend": settings.storage_backend,
-                "insforge": {
-                    "base_url_configured": bool((settings.insforge_base_url or "").strip()),
-                    "api_key_configured": bool((settings.insforge_api_key or "").strip()),
-                    "database_url_configured": bool((settings.insforge_database_url or "").strip()),
-                    "project_id_configured": bool((settings.insforge_project_id or "").strip()),
-                    "storage_bucket_configured": bool((settings.insforge_storage_bucket or "").strip()),
-                    "storage_namespace_configured": bool((settings.insforge_storage_namespace or "").strip()),
-                    "auth_jwks_url_configured": bool((settings.insforge_auth_jwks_url or "").strip()),
-                    "mcp_base_url_configured": bool((settings.insforge_mcp_base_url or "").strip()),
-                },
+                "insforge": _build_insforge_backend_status(settings),
+                "auth": _build_auth_backend_status(settings),
+                "customer": _build_customer_scope_status(settings),
+                "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
+                "extraction": _build_extraction_backend_status(),
             },
             "summary": {
                 "cases_total": repository.count_cases(),
@@ -768,6 +996,29 @@ def create_app() -> FastAPI:
             },
         }
 
+    @app.get("/admin/backends")
+    def admin_backends(request: Request) -> dict[str, object]:
+        return {
+            "app_env": settings.app_env,
+            "repository_backend": settings.repository_backend,
+            "storage_backend": settings.storage_backend,
+            "insforge": _build_insforge_backend_status(settings),
+            "auth": _build_auth_backend_status(settings),
+            "customer": _build_customer_scope_status(settings),
+            "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
+            "extraction": _build_extraction_backend_status(),
+        }
+
+    @app.get("/admin/auth")
+    def admin_auth(request: Request) -> dict[str, object]:
+        return {
+            "app_env": settings.app_env,
+            "insforge": _build_insforge_backend_status(settings),
+            "auth": _build_auth_backend_status(settings),
+            "customer": _build_customer_scope_status(settings),
+            "customer_scope": getattr(request.state, "customer_scope", _resolve_customer_scope(request, settings)),
+        }
+
     @app.get("/admin/recent")
     def admin_recent(limit: int = 10) -> dict[str, object]:
         repository = current_repository()
@@ -775,7 +1026,11 @@ def create_app() -> FastAPI:
         return {
             "limit": normalized_limit,
             "cases": _serialize(repository.search_cases(limit=normalized_limit)),
-            "documents": _serialize(repository.list_documents(limit=normalized_limit)),
+            "documents": attach_document_extraction_snapshots(
+                repository.list_documents(limit=normalized_limit),
+                repository.get_case_detail,
+                serialize_document=_serialize,
+            ),
             "operation_logs": _serialize(repository.list_operation_logs(limit=normalized_limit)),
             "notification_deliveries": _serialize(repository.list_notification_deliveries(limit=normalized_limit)),
         }
@@ -803,6 +1058,7 @@ def create_app() -> FastAPI:
 
     @app.get("/admin/dashboard")
     def admin_dashboard(
+        request: Request,
         recent_limit: int = 5,
         activity_limit: int = 20,
         kind: str | None = None,
@@ -814,7 +1070,7 @@ def create_app() -> FastAPI:
         normalized_recent_limit = max(1, min(recent_limit, 50))
         normalized_activity_limit = max(1, min(activity_limit, 50))
         return {
-            "overview": admin_overview(),
+            "overview": admin_overview(request),
             "recent": admin_recent(limit=normalized_recent_limit),
             "activity": admin_activity(
                 limit=normalized_activity_limit,
@@ -830,8 +1086,8 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/admin", response_class=HTMLResponse)
-    def admin_page() -> str:
-        dashboard = admin_dashboard(recent_limit=3, activity_limit=5)
+    def admin_page(request: Request) -> str:
+        dashboard = admin_dashboard(request, recent_limit=3, activity_limit=5)
         overview = dashboard["overview"]
         recent = dashboard["recent"]
         activity = dashboard["activity"]
@@ -839,6 +1095,7 @@ def create_app() -> FastAPI:
 
         overview_summary = overview["summary"]
         overview_settings = overview["settings"]
+        extraction_settings = overview_settings["extraction"]
         recent_cases = recent["cases"]
         recent_documents = recent["documents"]
         recent_logs = recent["operation_logs"]
@@ -850,7 +1107,8 @@ def create_app() -> FastAPI:
             for item in recent_cases
         ) or "<li>No recent cases.</li>"
         recent_documents_html = "".join(
-            f"<li><strong>{escape(item['filename'])}</strong> - {escape(item['source_type'])}</li>"
+            f"<li><strong>{escape(item['filename'])}</strong> - {escape(item['source_type'])} - "
+            f"{escape((item.get('extraction') or {}).get('extraction_source') or 'no extraction snapshot')}</li>"
             for item in recent_documents
         ) or "<li>No recent documents.</li>"
         recent_logs_html = "".join(
@@ -892,6 +1150,10 @@ def create_app() -> FastAPI:
                             <li>Environment: {escape(str(overview_settings["app_env"]))}</li>
                             <li>Repository: {escape(str(overview_settings["repository_backend"]))}</li>
                             <li>Storage: {escape(str(overview_settings["storage_backend"]))}</li>
+                            <li>Extraction helpers: {escape(", ".join(name for name, enabled in extraction_settings.items() if enabled and name in {"pypdf", "pdfplumber", "pdf2image", "pillow", "pytesseract"}) or "none")}</li>
+                            <li>PDF text parsing ready: {escape(str(extraction_settings["pdf_text_parsing_ready"]))}</li>
+                            <li>Image OCR ready: {escape(str(extraction_settings["image_ocr_ready"]))}</li>
+                            <li>Scanned PDF OCR ready: {escape(str(extraction_settings["scanned_pdf_ocr_ready"]))}</li>
                             <li>Cases: {overview_summary["cases_total"]}</li>
                             <li>Documents: {overview_summary["documents_total"]}</li>
                             <li>Operation logs: {overview_summary["operation_logs_total"]}</li>
@@ -931,44 +1193,161 @@ def create_app() -> FastAPI:
                 {
                     "name": "cases",
                     "title": "Cases",
-                    "collection_path": "/cases/search",
+                    "id_field": "id",
+                    "label_field": "case_code",
+                    "default_sort": {"field": "updated_at", "order": "DESC"},
+                    "supports": ["list", "show", "edit"],
+                    "actions": ["edit", "activity", "reprocess"],
+                    "collection_path": "/cases",
+                    "search_path": "/cases/search",
+                    "detail_key": "case_id",
                     "detail_path": "/cases/{case_id}",
+                    "edit_path": "/cases/{case_id}",
+                    "reprocess_path": "/cases/{case_id}/reprocess-documents",
                     "activity_path": "/cases/{case_id}/activity",
+                    "list_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "updated_at"],
+                    "detail_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "created_at", "updated_at", "last_processed_at"],
+                    "form_fields": [
+                        {"name": "title", "label": "title", "input_type": "text", "placeholder": "title"},
+                        {"name": "client_name", "label": "client_name", "input_type": "text", "placeholder": "client_name"},
+                        {"name": "status", "label": "status", "input_type": "text", "placeholder": "status"},
+                        {"name": "due_date", "label": "due_date", "input_type": "date", "placeholder": "due_date"},
+                        {"name": "invoice_status", "label": "invoice_status", "input_type": "text", "placeholder": "invoice_status"},
+                        {"name": "output_status", "label": "output_status", "input_type": "text", "placeholder": "output_status"},
+                        {"name": "last_processed_at", "label": "last_processed_at", "input_type": "text", "placeholder": "last_processed_at"},
+                    ],
+                    "editable_fields": ["title", "client_name", "status", "due_date", "invoice_status", "output_status", "last_processed_at"],
                     "filters": ["query", "status", "due_before", "invoice_status", "output_status"],
                 },
                 {
                     "name": "documents",
                     "title": "Documents",
+                    "id_field": "id",
+                    "label_field": "filename",
+                    "default_sort": {"field": "updated_at", "order": "DESC"},
+                    "supports": ["list", "show", "edit"],
+                    "actions": ["manage", "activity", "reassign", "reprocess", "delete"],
                     "collection_path": "/documents",
+                    "detail_key": "document_id",
                     "detail_path": "/documents/{document_id}",
                     "activity_path": "/documents/{document_id}/activity",
+                    "list_fields": ["id", "case_id", "source_type", "filename", "mime_type", "version", "is_deleted", "extraction", "updated_at"],
+                    "detail_fields": ["id", "case_id", "source_type", "source_path", "storage_key", "filename", "mime_type", "content_hash", "size_bytes", "version", "is_deleted", "deleted_at", "created_at", "updated_at", "extraction"],
                     "filters": ["case_id", "source_type", "is_deleted", "query"],
+                },
+                {
+                    "name": "invoices",
+                    "title": "Invoices",
+                    "id_field": "id",
+                    "label_field": "case_code",
+                    "default_sort": {"field": "due_date", "order": "ASC"},
+                    "supports": ["list", "show"],
+                    "actions": ["edit", "review"],
+                    "collection_path": "/admin/invoices",
+                    "detail_key": "case_id",
+                    "detail_path": "/cases/{case_id}",
+                    "list_fields": ["id", "case_code", "title", "due_date", "invoice_status", "output_status", "updated_at"],
+                    "detail_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "created_at", "updated_at", "last_processed_at"],
+                    "filters": ["invoice_status", "due_before"],
+                },
+                {
+                    "name": "missing_submissions",
+                    "title": "Missing Submissions",
+                    "id_field": "case_id",
+                    "label_field": "case_code",
+                    "default_sort": {"field": "due_date", "order": "ASC"},
+                    "supports": ["list", "show"],
+                    "actions": ["review", "edit"],
+                    "collection_path": "/admin/missing-submissions",
+                    "detail_key": "case_id",
+                    "detail_path": "/cases/{case_id}",
+                    "list_fields": ["case_id", "case_code", "title", "due_date", "invoice_status", "output_status", "missing_submission_reason", "updated_at"],
+                    "detail_fields": ["id", "case_code", "title", "client_name", "status", "due_date", "invoice_status", "output_status", "created_at", "updated_at", "last_processed_at"],
+                    "filters": ["query", "status", "due_before", "invoice_status", "output_status"],
                 },
                 {
                     "name": "operation_logs",
                     "title": "Operation Logs",
+                    "id_field": "id",
+                    "label_field": "event_type",
+                    "default_sort": {"field": "created_at", "order": "DESC"},
+                    "supports": ["list", "show"],
+                    "actions": ["view"],
                     "collection_path": "/operation-logs",
+                    "detail_key": "operation_log_id",
+                    "detail_path": "/operation-logs/{operation_log_id}",
+                    "list_fields": ["id", "event_type", "entity_type", "entity_id", "case_id", "document_id", "message", "created_at"],
+                    "detail_fields": ["id", "event_type", "entity_type", "entity_id", "case_id", "document_id", "message", "metadata_json", "created_at"],
                     "filters": ["case_id", "document_id", "event_type"],
                 },
                 {
                     "name": "notification_deliveries",
                     "title": "Notification Deliveries",
+                    "id_field": "id",
+                    "label_field": "deliver_to",
+                    "default_sort": {"field": "created_at", "order": "DESC"},
+                    "supports": ["list", "show"],
+                    "actions": ["view", "summary", "trends", "alerts", "report"],
                     "collection_path": "/notification-deliveries",
+                    "detail_key": "notification_delivery_id",
+                    "detail_path": "/notification-deliveries/{notification_delivery_id}",
                     "summary_path": "/notification-deliveries/summary",
                     "trends_path": "/notification-deliveries/trends",
                     "alerts_path": "/notification-deliveries/alerts",
                     "report_path": "/notification-deliveries/report",
+                    "list_fields": ["id", "deliver_to", "destination", "status", "delivered_count", "digest_as_of", "created_at"],
+                    "detail_fields": ["id", "deliver_to", "destination", "delivered_count", "digest_as_of", "due_lookahead_days", "invoice_lookahead_days", "status", "message", "error_message", "metadata_json", "created_at"],
                     "filters": ["deliver_to", "status", "created_after", "created_before"],
                 },
                 {
                     "name": "admin",
                     "title": "Admin Dashboard",
+                    "id_field": "name",
+                    "label_field": "title",
+                    "default_sort": {"field": "name", "order": "ASC"},
+                    "supports": ["dashboard"],
+                    "actions": ["dashboard"],
                     "collection_path": "/admin/dashboard",
+                    "detail_key": "name",
                     "overview_path": "/admin/overview",
                     "recent_path": "/admin/recent",
                     "activity_path": "/admin/activity",
+                    "list_fields": ["name", "title", "collection_path", "overview_path", "recent_path", "activity_path"],
                 },
             ]
+        }
+
+    @app.get("/admin/react-admin")
+    def admin_react_admin() -> dict[str, object]:
+        resources = admin_resources()["resources"]
+        return {
+            "framework": "react-admin",
+            "resources": [
+                {
+                    "name": resource["name"],
+                    "label": resource["title"],
+                    "idField": resource["id_field"],
+                    "labelField": resource["label_field"],
+                    "sort": resource["default_sort"],
+                    "supports": resource.get("supports", []),
+                    "actions": resource.get("actions", []),
+                    "listPath": resource.get("collection_path"),
+                    "showPath": resource.get("detail_path"),
+                    "editPath": resource.get("edit_path"),
+                    "reprocessPath": resource.get("reprocess_path"),
+                    "activityPath": resource.get("activity_path"),
+                    "summaryPath": resource.get("summary_path"),
+                    "trendsPath": resource.get("trends_path"),
+                    "alertsPath": resource.get("alerts_path"),
+                    "reportPath": resource.get("report_path"),
+                    "fields": resource.get("list_fields", []),
+                    "detailFields": resource.get("detail_fields", []),
+                    "formFields": resource.get("form_fields", []),
+                    "filters": resource.get("filters", []),
+                    "searchPath": resource.get("search_path"),
+                }
+                for resource in resources
+            ],
         }
 
     @app.get("/admin/ui", response_class=HTMLResponse)
@@ -1053,6 +1432,76 @@ def create_app() -> FastAPI:
                     </section>
 
                     <section class="card" style="margin-top: 16px;">
+                        <h2>Resource Browser</h2>
+                        <div class="toolbar">
+                            <select id="resourceSelect"></select>
+                            <input id="resourceLimit" type="number" min="1" max="50" value="5" />
+                            <input id="resourceQuery" type="text" placeholder="query" />
+                            <input id="resourceCaseId" type="number" min="1" placeholder="case_id" />
+                            <input id="resourceDocumentId" type="number" min="1" placeholder="document_id" />
+                            <input id="resourceStatus" type="text" placeholder="status" />
+                            <input id="resourceDueBefore" type="date" placeholder="due_before" />
+                            <input id="resourceInvoiceStatus" type="text" placeholder="invoice_status" />
+                            <input id="resourceOutputStatus" type="text" placeholder="output_status" />
+                            <input id="resourceDeliverTo" type="text" placeholder="deliver_to" />
+                            <input id="resourceSourceType" type="text" placeholder="source_type" />
+                            <button id="loadResourceButton" type="button">Load selected resource</button>
+                        </div>
+                        <div id="resourceActionBar" class="toolbar muted">Resource actions appear here after loading a resource.</div>
+                        <div id="resourceBrowserContent" class="muted">Select a resource to inspect.</div>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
+                        <h2>Case Editor</h2>
+                        <div class="toolbar">
+                            <input id="caseEditorId" type="number" min="1" placeholder="case_id" />
+                            <button id="caseEditorLoadButton" type="button">Load case</button>
+                            <button id="caseEditorSaveButton" type="button" class="secondary">Save case</button>
+                        </div>
+                        <div id="caseEditorFields" class="toolbar"></div>
+                        <p id="caseEditorMessage" class="muted">Load a case or click a case detail to edit it here.</p>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
+                        <h2>Document Tools</h2>
+                        <div class="toolbar">
+                            <input id="documentToolId" type="number" min="1" placeholder="document_id" />
+                            <input id="documentToolTargetCaseId" type="number" min="1" placeholder="target_case_id" />
+                            <button id="documentToolLoadButton" type="button">Load document</button>
+                            <button id="documentToolReassignButton" type="button" class="secondary">Reassign</button>
+                            <button id="documentToolReprocessButton" type="button" class="secondary">Reprocess</button>
+                            <button id="documentToolDeleteButton" type="button" class="secondary">Delete</button>
+                        </div>
+                        <p id="documentToolMessage" class="muted">Load a document or click a document detail to manage it here.</p>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
+                        <h2>Notification Explorer</h2>
+                        <div class="toolbar">
+                            <input id="notificationExplorerCreatedAfter" type="date" placeholder="created_after" />
+                            <input id="notificationExplorerCreatedBefore" type="date" placeholder="created_before" />
+                            <input id="notificationExplorerDeliverTo" type="text" placeholder="deliver_to" />
+                            <input id="notificationExplorerGranularity" type="text" placeholder="granularity" value="day" />
+                            <button id="notificationExplorerSummaryButton" type="button">Load summary</button>
+                            <button id="notificationExplorerTrendsButton" type="button" class="secondary">Load trends</button>
+                            <button id="notificationExplorerAlertsButton" type="button" class="secondary">Load alerts</button>
+                            <button id="notificationExplorerReportButton" type="button" class="secondary">Load report</button>
+                        </div>
+                        <div id="notificationExplorerContent" class="muted">Load notification summary, trends, alerts, or report here.</div>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
+                        <h2>LINE現場整理パック</h2>
+                        <div class="toolbar">
+                            <button id="demoPackButton" type="button">Load demo pack</button>
+                            <a href="/admin/demo-pack" target="_blank" rel="noreferrer">Open demo pack JSON</a>
+                            <a href="/admin/missing-submissions" target="_blank" rel="noreferrer">Open missing submissions</a>
+                            <a href="/admin/invoices" target="_blank" rel="noreferrer">Open invoices</a>
+                        </div>
+                        <div id="demoPackContent" class="muted">Load the minimal LINE field-organization demo flow here.</div>
+                    </section>
+
+                    <section class="card" style="margin-top: 16px;">
                         <h2>Raw Payload</h2>
                         <pre id="rawContent">Loading raw payload...</pre>
                     </section>
@@ -1063,7 +1512,45 @@ def create_app() -> FastAPI:
                     const activityContent = document.getElementById("activityContent");
                     const notificationContent = document.getElementById("notificationContent");
                     const resourceContent = document.getElementById("resourceContent");
+                    const resourceSelect = document.getElementById("resourceSelect");
+                    const resourceLimit = document.getElementById("resourceLimit");
+                    const resourceQuery = document.getElementById("resourceQuery");
+                    const resourceCaseId = document.getElementById("resourceCaseId");
+                    const resourceDocumentId = document.getElementById("resourceDocumentId");
+                    const resourceStatus = document.getElementById("resourceStatus");
+                    const resourceDueBefore = document.getElementById("resourceDueBefore");
+                    const resourceInvoiceStatus = document.getElementById("resourceInvoiceStatus");
+                    const resourceOutputStatus = document.getElementById("resourceOutputStatus");
+                    const resourceDeliverTo = document.getElementById("resourceDeliverTo");
+                    const resourceSourceType = document.getElementById("resourceSourceType");
+                    const resourceActionBar = document.getElementById("resourceActionBar");
+                    const resourceBrowserContent = document.getElementById("resourceBrowserContent");
+                    const caseEditorId = document.getElementById("caseEditorId");
+                    const caseEditorFields = document.getElementById("caseEditorFields");
+                    const caseEditorMessage = document.getElementById("caseEditorMessage");
+                    const documentToolId = document.getElementById("documentToolId");
+                    const documentToolTargetCaseId = document.getElementById("documentToolTargetCaseId");
+                    const documentToolMessage = document.getElementById("documentToolMessage");
+                    const notificationExplorerCreatedAfter = document.getElementById("notificationExplorerCreatedAfter");
+                    const notificationExplorerCreatedBefore = document.getElementById("notificationExplorerCreatedBefore");
+                    const notificationExplorerDeliverTo = document.getElementById("notificationExplorerDeliverTo");
+                    const notificationExplorerGranularity = document.getElementById("notificationExplorerGranularity");
+                    const notificationExplorerContent = document.getElementById("notificationExplorerContent");
+                    const demoPackContent = document.getElementById("demoPackContent");
                     const rawContent = document.getElementById("rawContent");
+                    let availableResources = [];
+                    let currentCaseId = null;
+                    let currentDocumentId = null;
+                    let caseEditorFormFields = [
+                        { name: "title", label: "title", input_type: "text", placeholder: "title" },
+                        { name: "client_name", label: "client_name", input_type: "text", placeholder: "client_name" },
+                        { name: "status", label: "status", input_type: "text", placeholder: "status" },
+                        { name: "due_date", label: "due_date", input_type: "date", placeholder: "due_date" },
+                        { name: "invoice_status", label: "invoice_status", input_type: "text", placeholder: "invoice_status" },
+                        { name: "output_status", label: "output_status", input_type: "text", placeholder: "output_status" },
+                        { name: "last_processed_at", label: "last_processed_at", input_type: "text", placeholder: "last_processed_at" },
+                    ];
+                    let caseEditorFieldElements = {};
 
                     function readFilters() {
                         const params = new URLSearchParams();
@@ -1090,10 +1577,18 @@ def create_app() -> FastAPI:
                     function renderOverview(payload) {
                         const summary = payload.overview.summary;
                         const settings = payload.overview.settings;
+                        const extractionEnabled = Object.entries(settings.extraction || {})
+                            .filter(([name, enabled]) => enabled && ["pypdf", "pdfplumber", "pdf2image", "pillow", "pytesseract"].includes(name))
+                            .map(([name]) => name)
+                            .join(", ") || "none";
                         overviewContent.innerHTML = [
                             `<p><strong>Environment:</strong> ${settings.app_env}</p>`,
                             `<p><strong>Repository:</strong> ${settings.repository_backend}</p>`,
                             `<p><strong>Storage:</strong> ${settings.storage_backend}</p>`,
+                            `<p><strong>Extraction helpers:</strong> ${extractionEnabled}</p>`,
+                            `<p><strong>PDF text parsing ready:</strong> ${settings.extraction.pdf_text_parsing_ready}</p>`,
+                            `<p><strong>Image OCR ready:</strong> ${settings.extraction.image_ocr_ready}</p>`,
+                            `<p><strong>Scanned PDF OCR ready:</strong> ${settings.extraction.scanned_pdf_ocr_ready}</p>`,
                             `<p><strong>Cases:</strong> ${summary.cases_total}</p>`,
                             `<p><strong>Documents:</strong> ${summary.documents_total}</p>`,
                             `<p><strong>Operation logs:</strong> ${summary.operation_logs_total}</p>`,
@@ -1107,7 +1602,16 @@ def create_app() -> FastAPI:
                             '<h3>Cases</h3>',
                             renderList(payload.recent.cases, (item) => `<li><code>${item.case_code}</code> ${item.title}</li>`),
                             '<h3>Documents</h3>',
-                            renderList(payload.recent.documents, (item) => `<li><code>${item.filename}</code> ${item.source_type}</li>`),
+                            renderList(
+                                payload.recent.documents,
+                                (item) => {
+                                    const extraction = item.extraction || {};
+                                    const extractionSummary = extraction.available
+                                        ? `${extraction.extraction_source || "unknown"} via ${extraction.extraction_engine || "unknown"}`
+                                        : "no extraction snapshot";
+                                    return `<li><code>${item.filename}</code> ${item.source_type} - ${extractionSummary}</li>`;
+                                },
+                            ),
                             '<h3>Operation Logs</h3>',
                             renderList(payload.recent.operation_logs, (item) => `<li><code>${item.event_type}</code> ${item.message}</li>`),
                             '<h3>Notification Deliveries</h3>',
@@ -1130,8 +1634,470 @@ def create_app() -> FastAPI:
                         ].join('');
                     }
 
+                    function renderDemoPack(payload) {
+                        const currentCounts = payload.current_counts || {};
+                        const seededCases = (payload.cases || []).filter((item) => item.present);
+                        const missingPreview = payload.missing_submissions_preview || [];
+                        demoPackContent.innerHTML = [
+                            `<p><strong>${payload.title}</strong></p>`,
+                            `<p class="muted">${payload.scenario}</p>`,
+                            `<p><strong>Seed command:</strong> <code>${payload.seed_command}</code></p>`,
+                            `<p><strong>Seed script:</strong> <code>${payload.seed_script}</code></p>`,
+                            `<p><strong>Ready:</strong> ${payload.seeded ? "yes" : "no"}</p>`,
+                            `<p><strong>Counts:</strong> cases ${currentCounts.cases ?? 0}, documents ${currentCounts.documents ?? 0}, invoices ${currentCounts.invoices ?? 0}, missing submissions ${currentCounts.missing_submissions ?? 0}</p>`,
+                            '<h3>Steps</h3>',
+                            renderList((payload.steps || []).map((step) => ({
+                                title: step.title,
+                                step: step.step,
+                                kind: step.kind,
+                                command: step.command,
+                                path: step.path,
+                                paths: step.paths,
+                                script: step.script,
+                            })), (item) => {
+                                const links = [];
+                                if (item.path) {
+                                    links.push(`<code>${item.path}</code>`);
+                                }
+                                if (Array.isArray(item.paths)) {
+                                    links.push(item.paths.map((path) => `<code>${path}</code>`).join(" "));
+                                }
+                                const extras = [];
+                                if (item.command) {
+                                    extras.push(`<div><strong>Command:</strong> <code>${item.command}</code></div>`);
+                                }
+                                if (item.script) {
+                                    extras.push(`<div><strong>Script:</strong> <code>${item.script}</code></div>`);
+                                }
+                                return `<li><strong>${item.step}. ${item.title}</strong> <span class="muted">(${item.kind})</span>${links.length ? `<div>${links.join(" ")}</div>` : ""}${extras.join("")}</li>`;
+                            }),
+                            '<h3>Seeded cases</h3>',
+                            renderList(seededCases, (item) => `<li><code>${item.case_code}</code> ${item.title} - ${item.invoice_status} / ${item.output_status}</li>`),
+                            '<h3>Missing submissions preview</h3>',
+                            renderList(missingPreview, (item) => `<li><code>${item.case_code}</code> ${item.missing_submission_reason}</li>`),
+                            '<h3>Quick links</h3>',
+                            renderList((payload.resources || []), (item) => `<li><a href="${item.path}" target="_blank" rel="noreferrer">${item.label}</a></li>`),
+                        ].join('');
+                    }
+
+                    async function loadDemoPack() {
+                        const response = await fetch("/admin/demo-pack");
+                        const payload = await response.json();
+                        if (!response.ok) {
+                            demoPackContent.className = "status-bad";
+                            demoPackContent.textContent = payload.detail || "Failed to load demo pack.";
+                            rawContent.textContent = JSON.stringify(payload, null, 2);
+                            return;
+                        }
+                        demoPackContent.className = "";
+                        renderDemoPack(payload);
+                        rawContent.textContent = JSON.stringify({ resource: "demo_pack", payload }, null, 2);
+                    }
+
+                    function setCaseEditorMessage(message, className = "muted") {
+                        caseEditorMessage.className = className;
+                        caseEditorMessage.textContent = message;
+                    }
+
+                    function setDocumentToolMessage(message, className = "muted") {
+                        documentToolMessage.className = className;
+                        documentToolMessage.textContent = message;
+                    }
+
+                    function setNotificationExplorerMessage(message, className = "muted") {
+                        notificationExplorerContent.className = className;
+                        notificationExplorerContent.textContent = message;
+                    }
+
+                    function populateCaseEditor(caseDetail) {
+                        currentCaseId = caseDetail.id;
+                        caseEditorId.value = caseDetail.id ?? "";
+                        for (const field of caseEditorFormFields) {
+                            const element = caseEditorFieldElements[field.name];
+                            if (element) {
+                                element.value = caseDetail[field.name] ?? "";
+                            }
+                        }
+                        setCaseEditorMessage(`Loaded case ${caseDetail.case_code}.`, "status-good");
+                    }
+
+                    function getCaseEditorPayload() {
+                        const payload = {};
+                        for (const field of caseEditorFormFields) {
+                            const element = caseEditorFieldElements[field.name];
+                            if (!element) {
+                                continue;
+                            }
+                            const trimmed = element.value.trim();
+                            if (trimmed) {
+                                payload[field.name] = trimmed;
+                            }
+                        }
+                        return payload;
+                    }
+
+                    function clearCaseEditor(message) {
+                        currentCaseId = null;
+                        for (const field of caseEditorFormFields) {
+                            const element = caseEditorFieldElements[field.name];
+                            if (element) {
+                                element.value = "";
+                            }
+                        }
+                        setCaseEditorMessage(message, "muted");
+                    }
+
+                    function renderCaseEditorFields(resource) {
+                        const fields = resource?.form_fields || caseEditorFormFields;
+                        caseEditorFormFields = fields;
+                        caseEditorFieldElements = {};
+                        caseEditorFields.innerHTML = fields.map((field) => {
+                            const inputId = `caseEditorField-${field.name}`;
+                            const minWidth = field.input_type === "date" ? "150px" : (field.name === "last_processed_at" ? "240px" : "220px");
+                            return `
+                                <label style="display: grid; gap: 4px; min-width: ${minWidth};">
+                                    <span class="muted">${field.label || field.name}</span>
+                                    <input id="${inputId}" type="${field.input_type || "text"}" placeholder="${field.placeholder || field.name}" />
+                                </label>
+                            `;
+                        }).join("");
+                        for (const field of fields) {
+                            caseEditorFieldElements[field.name] = document.getElementById(`caseEditorField-${field.name}`);
+                        }
+                    }
+
+                    function populateDocumentTool(documentDetail) {
+                        currentDocumentId = documentDetail.id;
+                        documentToolId.value = documentDetail.id ?? "";
+                        documentToolTargetCaseId.value = documentDetail.case_id ?? "";
+                        const extraction = documentDetail.extraction || {};
+                        const extractionSummary = extraction.available
+                            ? `${extraction.extraction_source || "unknown"} via ${extraction.extraction_engine || "unknown"}`
+                            : "no extraction snapshot";
+                        setDocumentToolMessage(`Loaded document ${documentDetail.filename}. Extraction: ${extractionSummary}.`, "status-good");
+                    }
+
+                    function clearDocumentTool(message) {
+                        currentDocumentId = null;
+                        documentToolId.value = "";
+                        documentToolTargetCaseId.value = "";
+                        setDocumentToolMessage(message, "muted");
+                    }
+
+                    async function loadDocumentTool(documentId) {
+                        const value = String(documentId ?? documentToolId.value).trim();
+                        if (!value) {
+                            clearDocumentTool("Enter a document ID to load its details.");
+                            return;
+                        }
+                        const response = await fetch(`/documents/${encodeURIComponent(value)}`);
+                        const detail = await response.json();
+                        if (!response.ok || !detail) {
+                            clearDocumentTool("Document not found.");
+                            rawContent.textContent = JSON.stringify(detail, null, 2);
+                            return;
+                        }
+                        populateDocumentTool(detail);
+                        rawContent.textContent = JSON.stringify({ resource: "documents", detail }, null, 2);
+                    }
+
+                    async function reassignDocumentTool() {
+                        const documentId = String(documentToolId.value || currentDocumentId || "").trim();
+                        const targetCaseId = String(documentToolTargetCaseId.value).trim();
+                        if (!documentId || !targetCaseId) {
+                            setDocumentToolMessage("Enter both document_id and target_case_id.", "status-warn");
+                            return;
+                        }
+                        const response = await fetch(`/documents/${encodeURIComponent(documentId)}/reassign`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ target_case_id: Number(targetCaseId) }),
+                        });
+                        const detail = await response.json();
+                        if (!response.ok) {
+                            setDocumentToolMessage(detail.detail || "Failed to reassign document.", "status-bad");
+                            rawContent.textContent = JSON.stringify(detail, null, 2);
+                            return;
+                        }
+                        populateDocumentTool(detail);
+                        rawContent.textContent = JSON.stringify({ resource: "documents", detail }, null, 2);
+                    }
+
+                    async function reprocessDocumentTool() {
+                        const documentId = String(documentToolId.value || currentDocumentId || "").trim();
+                        if (!documentId) {
+                            setDocumentToolMessage("Enter a document ID before reprocessing.", "status-warn");
+                            return;
+                        }
+                        const response = await fetch(`/documents/${encodeURIComponent(documentId)}/reprocess`, {
+                            method: "POST",
+                        });
+                        const detail = await response.json();
+                        if (!response.ok) {
+                            setDocumentToolMessage(detail.detail || "Failed to reprocess document.", "status-bad");
+                            rawContent.textContent = JSON.stringify(detail, null, 2);
+                            return;
+                        }
+                        populateDocumentTool(detail);
+                        rawContent.textContent = JSON.stringify({ resource: "documents", detail }, null, 2);
+                    }
+
+                    async function deleteDocumentTool() {
+                        const documentId = String(documentToolId.value || currentDocumentId || "").trim();
+                        if (!documentId) {
+                            setDocumentToolMessage("Enter a document ID before deleting.", "status-warn");
+                            return;
+                        }
+                        if (!window.confirm(`Delete document ${documentId}?`)) {
+                            return;
+                        }
+                        const response = await fetch(`/documents/${encodeURIComponent(documentId)}`, {
+                            method: "DELETE",
+                        });
+                        const detail = await response.json();
+                        if (!response.ok) {
+                            setDocumentToolMessage(detail.detail || "Failed to delete document.", "status-bad");
+                            rawContent.textContent = JSON.stringify(detail, null, 2);
+                            return;
+                        }
+                        clearDocumentTool(`Deleted document ${documentId}.`);
+                        rawContent.textContent = JSON.stringify({ resource: "documents", detail }, null, 2);
+                    }
+
+                    function buildNotificationExplorerParams(basePath) {
+                        const params = new URLSearchParams();
+                        const createdAfter = notificationExplorerCreatedAfter.value.trim();
+                        const createdBefore = notificationExplorerCreatedBefore.value.trim();
+                        const deliverTo = notificationExplorerDeliverTo.value.trim();
+                        const granularity = notificationExplorerGranularity.value.trim() || "day";
+                        if (createdAfter) {
+                            params.set("created_after", createdAfter);
+                        }
+                        if (createdBefore) {
+                            params.set("created_before", createdBefore);
+                        }
+                        if (deliverTo) {
+                            params.set("deliver_to", deliverTo);
+                        }
+                        if (basePath.includes("trends") || basePath.includes("alerts") || basePath.includes("report")) {
+                            params.set("granularity", granularity);
+                        }
+                        return params;
+                    }
+
+                    async function loadNotificationExplorer(basePath, label) {
+                        const params = buildNotificationExplorerParams(basePath);
+                        const response = await fetch(`${basePath}?${params.toString()}`);
+                        const payload = await response.json();
+                        if (!response.ok) {
+                            setNotificationExplorerMessage(payload.detail || `Failed to load ${label}.`, "status-bad");
+                            rawContent.textContent = JSON.stringify(payload, null, 2);
+                            return;
+                        }
+                        notificationExplorerContent.innerHTML = `
+                            <p><strong>${label} loaded.</strong></p>
+                            <pre>${JSON.stringify(payload, null, 2)}</pre>
+                        `;
+                        setNotificationExplorerMessage(`Loaded ${label}.`, "status-good");
+                        rawContent.textContent = JSON.stringify({ resource: label, payload }, null, 2);
+                    }
+
+                    async function loadCaseEditor(caseId) {
+                        const value = String(caseId ?? caseEditorId.value).trim();
+                        if (!value) {
+                            clearCaseEditor("Enter a case ID to load its details.");
+                            return;
+                        }
+                        const response = await fetch(`/cases/${encodeURIComponent(value)}`);
+                        const detail = await response.json();
+                        if (!response.ok || !detail) {
+                            clearCaseEditor("Case not found.");
+                            rawContent.textContent = JSON.stringify(detail, null, 2);
+                            return;
+                        }
+                        populateCaseEditor(detail);
+                        rawContent.textContent = JSON.stringify({ resource: "cases", detail }, null, 2);
+                    }
+
+                    async function saveCaseEditor() {
+                        const caseId = String(caseEditorId.value || currentCaseId || "").trim();
+                        if (!caseId) {
+                            setCaseEditorMessage("Enter a case ID before saving.", "status-warn");
+                            return;
+                        }
+                        const payload = getCaseEditorPayload();
+                        if (!Object.keys(payload).length) {
+                            setCaseEditorMessage("Add at least one field before saving.", "status-warn");
+                            return;
+                        }
+                        const response = await fetch(`/cases/${encodeURIComponent(caseId)}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload),
+                        });
+                        const detail = await response.json();
+                        if (!response.ok) {
+                            setCaseEditorMessage(detail.detail || "Failed to save case.", "status-bad");
+                            rawContent.textContent = JSON.stringify(detail, null, 2);
+                            return;
+                        }
+                        populateCaseEditor(detail);
+                        rawContent.textContent = JSON.stringify({ resource: "cases", detail }, null, 2);
+                    }
+
                     function renderResources(payload) {
-                        resourceContent.innerHTML = renderList(payload.resources, (resource) => `<li><strong>${resource.name}</strong> - ${resource.collection_path || resource.overview_path || resource.summary_path || ""}</li>`);
+                        availableResources = payload.resources || [];
+                        if (!resourceSelect.options.length || resourceSelect.options.length !== availableResources.length) {
+                            resourceSelect.innerHTML = availableResources.map((resource) => `<option value="${resource.name}">${resource.title}</option>`).join("");
+                        }
+                        const caseResource = availableResources.find((resource) => resource.name === "cases");
+                        if (caseResource) {
+                            renderCaseEditorFields(caseResource);
+                        }
+                        if (availableResources.length && !resourceSelect.value) {
+                            resourceSelect.value = availableResources[0].name;
+                        }
+                        resourceContent.innerHTML = renderList(payload.resources, (resource) => {
+                            const supportTags = (resource.supports || []).map((support) => `<code>${support}</code>`).join(" ");
+                            const actionTags = (resource.actions || []).map((action) => `<code>${action}</code>`).join(" ");
+                            const path = resource.collection_path || resource.overview_path || resource.summary_path || "";
+                            return `<li><strong>${resource.title}</strong> <span class="muted">(${resource.name})</span> - ${path}<br /><span class="muted">${supportTags} ${actionTags}</span></li>`;
+                        });
+                    }
+
+                    function buildResourceQuery(resource) {
+                        const params = new URLSearchParams();
+                        const limit = resourceLimit.value.trim();
+                        if (limit) {
+                            params.set("limit", limit);
+                        }
+                        const filterMap = {
+                            query: resourceQuery.value.trim(),
+                            case_id: resourceCaseId.value.trim(),
+                            document_id: resourceDocumentId.value.trim(),
+                            status: resourceStatus.value.trim(),
+                            due_before: resourceDueBefore.value.trim(),
+                            invoice_status: resourceInvoiceStatus.value.trim(),
+                            output_status: resourceOutputStatus.value.trim(),
+                            deliver_to: resourceDeliverTo.value.trim(),
+                            source_type: resourceSourceType.value.trim(),
+                        };
+                        for (const [key, value] of Object.entries(filterMap)) {
+                            if (value && (resource.filters || []).includes(key)) {
+                                params.set(key, value);
+                            }
+                        }
+                        return params;
+                    }
+
+                    function renderResourceActions(resource) {
+                        if (!resource) {
+                            resourceActionBar.className = "toolbar muted";
+                            resourceActionBar.textContent = "Resource actions appear here after loading a resource.";
+                            return;
+                        }
+                        const buttons = [];
+                        if (resource.name === "cases") {
+                            buttons.push(`<button type="button" id="resourceActionCaseEditor">Open case editor</button>`);
+                            buttons.push(`<button type="button" id="resourceActionCaseActivity" class="secondary">Open case activity</button>`);
+                        } else if (resource.name === "documents") {
+                            buttons.push(`<button type="button" id="resourceActionDocumentTool">Open document tools</button>`);
+                            buttons.push(`<button type="button" id="resourceActionDocumentActivity" class="secondary">Open document activity</button>`);
+                        } else if (resource.name === "notification_deliveries") {
+                            buttons.push(`<button type="button" id="resourceActionNotificationSummary">Summary</button>`);
+                            buttons.push(`<button type="button" id="resourceActionNotificationTrends" class="secondary">Trends</button>`);
+                            buttons.push(`<button type="button" id="resourceActionNotificationAlerts" class="secondary">Alerts</button>`);
+                            buttons.push(`<button type="button" id="resourceActionNotificationReport" class="secondary">Report</button>`);
+                        } else if (resource.name === "operation_logs") {
+                            buttons.push(`<span class="muted">Open details from the row buttons below.</span>`);
+                        } else {
+                            buttons.push(`<span class="muted">No special actions.</span>`);
+                        }
+                        resourceActionBar.className = "toolbar";
+                        resourceActionBar.innerHTML = buttons.join("");
+                    }
+
+                    function renderResourceTable(resource, items) {
+                        const fields = [...(resource.list_fields || [])];
+                        if (!Array.isArray(items)) {
+                            return `<pre>${JSON.stringify(items, null, 2)}</pre>`;
+                        }
+                        if (!items.length) {
+                            return `<p class="muted">No rows for ${resource.title}.</p>`;
+                        }
+                        const hasDetail = Boolean(resource.detail_path);
+                        const hasActionButtons = Boolean(resource.actions && resource.actions.length);
+                        const header = [...fields, hasDetail ? "detail" : null, hasActionButtons ? "actions" : null].filter(Boolean).map((field) => `<th>${field}</th>`).join("");
+                        const rows = items.map((item) => {
+                            const cells = fields.map((field) => {
+                                if (field === "extraction") {
+                                    const extraction = item.extraction || {};
+                                    const summary = extraction.available
+                                        ? `${extraction.extraction_source || "unknown"} via ${extraction.extraction_engine || "unknown"}`
+                                        : "no extraction snapshot";
+                                    return `<td>${summary}</td>`;
+                                }
+                                return `<td>${String(item[field] ?? "")}</td>`;
+                            }).join("");
+                            const detailCell = hasDetail
+                                ? `<td><button type="button" data-resource="${resource.name}" data-item-id="${item[resource.id_field || "id"]}">Load detail</button></td>`
+                                : "";
+                            const actionButtons = [];
+                            if ((resource.actions || []).includes("edit") && resource.name === "cases") {
+                                actionButtons.push(`<button type="button" data-case-editor-id="${item[resource.id_field || "id"]}">Edit case</button>`);
+                            }
+                            if ((resource.actions || []).includes("manage") && resource.name === "documents") {
+                                actionButtons.push(`<button type="button" data-document-tool-id="${item[resource.id_field || "id"]}">Manage document</button>`);
+                            }
+                            if ((resource.actions || []).includes("view") && !hasDetail) {
+                                actionButtons.push(`<span class="muted">view</span>`);
+                            }
+                            const actionCell = hasActionButtons ? `<td>${actionButtons.join(" ")}</td>` : "";
+                            return `<tr>${cells}${detailCell}${actionCell}</tr>`;
+                        }).join("");
+                        return `
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead><tr>${header}</tr></thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        `;
+                    }
+
+                    function buildResourceDetailPath(resource, itemId) {
+                        return (resource.detail_path || "").replace(`{${resource.detail_key || resource.id_field || "id"}}`, encodeURIComponent(String(itemId)));
+                    }
+
+                    async function loadResourceDetail(resourceName, itemId) {
+                        const resource = availableResources.find((item) => item.name === resourceName);
+                        if (!resource || !resource.detail_path) {
+                            return;
+                        }
+                        const response = await fetch(buildResourceDetailPath(resource, itemId));
+                        const detail = await response.json();
+                        resourceBrowserContent.innerHTML = `<pre>${JSON.stringify(detail, null, 2)}</pre>`;
+                        rawContent.textContent = JSON.stringify({ resource, detail }, null, 2);
+                        if (resource.name === "cases" && detail) {
+                            populateCaseEditor(detail);
+                        }
+                        if (resource.name === "documents" && detail) {
+                            populateDocumentTool(detail);
+                        }
+                    }
+
+                    async function loadSelectedResource() {
+                        const selectedName = resourceSelect.value;
+                        const resource = availableResources.find((item) => item.name === selectedName);
+                        if (!resource) {
+                            resourceBrowserContent.innerHTML = '<p class="muted">Select a resource.</p>';
+                            renderResourceActions(null);
+                            return;
+                        }
+                        const params = buildResourceQuery(resource);
+                        const response = await fetch(`${resource.collection_path}?${params.toString()}`);
+                        const items = await response.json();
+                        renderResourceActions(resource);
+                        resourceBrowserContent.innerHTML = renderResourceTable(resource, items);
+                        rawContent.textContent = JSON.stringify({ resource, items }, null, 2);
                     }
 
                     async function loadAdmin() {
@@ -1149,17 +2115,92 @@ def create_app() -> FastAPI:
                         const response = await fetch('/admin/resources');
                         const payload = await response.json();
                         renderResources(payload);
+                        if (availableResources.length) {
+                            await loadSelectedResource();
+                        }
                     }
 
                     document.getElementById("refreshButton").addEventListener("click", loadAdmin);
                     document.getElementById("loadResourcesButton").addEventListener("click", loadResources);
+                    document.getElementById("loadResourceButton").addEventListener("click", loadSelectedResource);
+                    document.getElementById("caseEditorLoadButton").addEventListener("click", () => loadCaseEditor());
+                    document.getElementById("caseEditorSaveButton").addEventListener("click", saveCaseEditor);
+                    document.getElementById("documentToolLoadButton").addEventListener("click", () => loadDocumentTool());
+                    document.getElementById("documentToolReassignButton").addEventListener("click", reassignDocumentTool);
+                    document.getElementById("documentToolReprocessButton").addEventListener("click", reprocessDocumentTool);
+                    document.getElementById("documentToolDeleteButton").addEventListener("click", deleteDocumentTool);
+                    document.getElementById("notificationExplorerSummaryButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/summary", "notification summary"));
+                    document.getElementById("notificationExplorerTrendsButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/trends", "notification trends"));
+                    document.getElementById("notificationExplorerAlertsButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/alerts", "notification alerts"));
+                    document.getElementById("notificationExplorerReportButton").addEventListener("click", () => loadNotificationExplorer("/notification-deliveries/report", "notification report"));
+                    document.getElementById("demoPackButton").addEventListener("click", loadDemoPack);
                     document.getElementById("activityKind").addEventListener("change", loadAdmin);
                     document.getElementById("activityCaseId").addEventListener("change", loadAdmin);
                     document.getElementById("activityDocumentId").addEventListener("change", loadAdmin);
                     document.getElementById("activityDeliverTo").addEventListener("change", loadAdmin);
+                    resourceSelect.addEventListener("change", loadSelectedResource);
+                    resourceActionBar.addEventListener("click", async (event) => {
+                        if (event.target.id === "resourceActionCaseEditor") {
+                            const firstCase = resourceSelect.value === "cases" ? caseEditorId.value : null;
+                            await loadCaseEditor(firstCase);
+                        }
+                        if (event.target.id === "resourceActionCaseActivity") {
+                            const caseId = caseEditorId.value || currentCaseId;
+                            if (caseId) {
+                                document.getElementById("activityKind").value = "case";
+                                document.getElementById("activityCaseId").value = caseId;
+                                await loadAdmin();
+                            }
+                        }
+                        if (event.target.id === "resourceActionDocumentTool") {
+                            const firstDocument = documentToolId.value || currentDocumentId;
+                            await loadDocumentTool(firstDocument);
+                        }
+                        if (event.target.id === "resourceActionDocumentActivity") {
+                            const documentId = documentToolId.value || currentDocumentId;
+                            if (documentId) {
+                                document.getElementById("activityKind").value = "document";
+                                document.getElementById("activityDocumentId").value = documentId;
+                                await loadAdmin();
+                            }
+                        }
+                        if (event.target.id === "resourceActionNotificationSummary") {
+                            await loadNotificationExplorer("/notification-deliveries/summary", "notification summary");
+                        }
+                        if (event.target.id === "resourceActionNotificationTrends") {
+                            await loadNotificationExplorer("/notification-deliveries/trends", "notification trends");
+                        }
+                        if (event.target.id === "resourceActionNotificationAlerts") {
+                            await loadNotificationExplorer("/notification-deliveries/alerts", "notification alerts");
+                        }
+                        if (event.target.id === "resourceActionNotificationReport") {
+                            await loadNotificationExplorer("/notification-deliveries/report", "notification report");
+                        }
+                    });
+                    resourceBrowserContent.addEventListener("click", async (event) => {
+                        const button = event.target.closest("button[data-resource][data-item-id]");
+                        if (!button) {
+                            return;
+                        }
+                        await loadResourceDetail(button.dataset.resource, button.dataset.itemId);
+                    });
+                    resourceBrowserContent.addEventListener("click", async (event) => {
+                        const caseButton = event.target.closest("button[data-case-editor-id]");
+                        if (caseButton) {
+                            caseEditorId.value = caseButton.dataset.caseEditorId;
+                            await loadCaseEditor(caseButton.dataset.caseEditorId);
+                            return;
+                        }
+                        const documentButton = event.target.closest("button[data-document-tool-id]");
+                        if (documentButton) {
+                            documentToolId.value = documentButton.dataset.documentToolId;
+                            await loadDocumentTool(documentButton.dataset.documentToolId);
+                        }
+                    });
 
                     loadAdmin();
                     loadResources();
+                    loadDemoPack();
                 </script>
             </body>
         </html>
@@ -1246,10 +2287,36 @@ def create_app() -> FastAPI:
             )
         )
 
+    @app.get("/cases")
+    def list_cases(
+        response: Response,
+        query: str = "",
+        status: str | None = None,
+        due_before: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        return search_cases(
+            response,
+            query=query,
+            status=status,
+            due_before=due_before,
+            limit=limit,
+            offset=offset,
+        )
+
     @app.get("/cases/{case_id}")
     def get_case_detail(case_id: int) -> dict[str, object] | None:
         detail = current_repository().get_case_detail(case_id)
-        return _serialize(detail) if detail is not None else None
+        if detail is None:
+            return None
+        serialized_detail = _serialize(detail)
+        serialized_detail["documents"] = attach_document_extraction_snapshots(
+            getattr(detail, "documents", []),
+            lambda case_id: detail,
+            serialize_document=_serialize,
+        )
+        return serialized_detail
 
     @app.get("/cases/{case_id}/activity")
     def list_case_activity(
@@ -1297,6 +2364,11 @@ def create_app() -> FastAPI:
             )
         )
 
+    @app.get("/operation-logs/{operation_log_id}")
+    def get_operation_log(operation_log_id: int) -> dict[str, object] | None:
+        log = current_repository().get_operation_log(operation_log_id)
+        return _serialize(log) if log is not None else None
+
     @app.get("/line-webhooks/report")
     def line_webhook_report(
         limit: int = 20,
@@ -1320,6 +2392,7 @@ def create_app() -> FastAPI:
         alerts: list[dict[str, object]] = []
         if needs_attention:
             latest = pending_backlog_latest[0] if pending_backlog_latest else None
+            latest_metadata = _parse_metadata_json(latest.metadata_json) if latest is not None else {}
             alerts.append(
                 {
                     "alert_type": "pending_backlog",
@@ -1331,6 +2404,7 @@ def create_app() -> FastAPI:
                         f"which meets or exceeds the threshold of {max(1, pending_backlog_threshold)}."
                     ),
                     "latest_pending": _serialize(latest) if latest else None,
+                    "latest_pending_summary": _line_webhook_helper_metadata(latest_metadata) if latest else None,
                 }
             )
         return {
@@ -1365,6 +2439,7 @@ def create_app() -> FastAPI:
                 )
                 latest_pending = item.get("latest_pending")
                 if latest_pending:
+                    latest_pending_summary = item.get("latest_pending_summary") or {}
                     lines.extend(
                         [
                             f"- latest pending id: {latest_pending.get('id')}",
@@ -1372,6 +2447,19 @@ def create_app() -> FastAPI:
                             f"- latest pending created at: {latest_pending.get('created_at')}",
                         ]
                     )
+                    for label, key in (
+                        ("latest pending reply_token", "reply_token"),
+                        ("latest pending is_redelivery", "is_redelivery"),
+                        ("latest pending quoted_message_id", "quoted_message_id"),
+                        ("latest pending file_name", "file_name"),
+                        ("latest pending content_provider_type", "content_provider_type"),
+                        ("latest pending content_provider_original_content_url", "content_provider_original_content_url"),
+                        ("latest pending content_provider_preview_image_url", "content_provider_preview_image_url"),
+                        ("latest pending content_type", "content_type"),
+                    ):
+                        value = latest_pending_summary.get(key)
+                        if value is not None:
+                            lines.append(f"- {label}: {value}")
         else:
             lines.extend(["", "## Alerts", "- No alerts."])
         return "\n".join(lines).strip() + "\n"
@@ -1397,6 +2485,7 @@ def create_app() -> FastAPI:
         if summary.get("attention_reason"):
             lines.append(f"- attention reason: {summary['attention_reason']}")
         if latest_pending:
+            latest_pending_summary = report.get("pending_backlog_latest_summary") or {}
             lines.extend(
                 [
                     "",
@@ -1406,13 +2495,41 @@ def create_app() -> FastAPI:
                     f"- created_at: {latest_pending['created_at']}",
                 ]
             )
+            for label, key in (
+                ("reply_token", "reply_token"),
+                ("is_redelivery", "is_redelivery"),
+                ("quoted_message_id", "quoted_message_id"),
+                ("file_name", "file_name"),
+                ("content_provider_type", "content_provider_type"),
+                ("content_provider_original_content_url", "content_provider_original_content_url"),
+                ("content_provider_preview_image_url", "content_provider_preview_image_url"),
+                ("content_type", "content_type"),
+            ):
+                value = latest_pending_summary.get(key)
+                if value is not None:
+                    lines.append(f"- {label}: {value}")
         if recent_events:
             lines.extend(["", "## Recent Events"])
             for item in recent_events:
-                lines.append(
-                    f"- {item.get('created_at')} | {item.get('operation_event_type')} | "
-                    f"{item.get('line_event_type')} | {item.get('message_type') or '-'}"
+                metadata_json = _parse_metadata_json(item.get("metadata_json"))
+                line = (
+                    f"- {item.get('created_at')} | {item.get('event_type')} | "
+                    f"{metadata_json.get('event_type')} | {metadata_json.get('message_type') or '-'}"
                 )
+                extra_bits = []
+                for label, key in (
+                    ("file_name", "file_name"),
+                    ("content_provider_type", "content_provider_type"),
+                    ("content_provider_original_content_url", "content_provider_original_content_url"),
+                    ("content_provider_preview_image_url", "content_provider_preview_image_url"),
+                    ("content_type", "content_type"),
+                ):
+                    value = metadata_json.get(key)
+                    if value is not None:
+                        extra_bits.append(f"{label}: {value}")
+                if extra_bits:
+                    line += " | " + " | ".join(extra_bits)
+                lines.append(line)
         else:
             lines.extend(["", "## Recent Events", "- No recent events."])
         return PlainTextResponse("\n".join(lines).strip() + "\n")
@@ -1469,6 +2586,7 @@ def create_app() -> FastAPI:
                     "event_type": metadata_json.get("event_type"),
                     "message_type": metadata_json.get("message_type"),
                     "event_json": metadata_json.get("event_json"),
+                    **_line_webhook_extra_metadata(metadata_json),
                 }
             )
         return {
@@ -1739,6 +2857,11 @@ def create_app() -> FastAPI:
         )
         return render_notification_delivery_report_markdown(report)
 
+    @app.get("/notification-deliveries/{notification_delivery_id}")
+    def get_notification_delivery(notification_delivery_id: int) -> dict[str, object] | None:
+        delivery = current_repository().get_notification_delivery(notification_delivery_id)
+        return _serialize(delivery) if delivery is not None else None
+
     @app.patch("/cases/{case_id}")
     def update_case(case_id: int, payload: CaseUpdateRequest) -> dict[str, object]:
         from fastapi import HTTPException
@@ -1810,24 +2933,28 @@ def create_app() -> FastAPI:
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, object]]:
+        repository = current_repository()
+        documents = repository.list_documents(
+            case_id=case_id,
+            source_type=source_type,
+            is_deleted=is_deleted,
+            query=query,
+            limit=limit,
+            offset=offset,
+        )
         _set_total_count_header(
             response,
-            current_repository().count_documents(
+            repository.count_documents(
                 case_id=case_id,
                 source_type=source_type,
                 is_deleted=is_deleted,
                 query=query,
             ),
         )
-        return _serialize(
-            current_repository().list_documents(
-                case_id=case_id,
-                source_type=source_type,
-                is_deleted=is_deleted,
-                query=query,
-                limit=limit,
-                offset=offset,
-            )
+        return attach_document_extraction_snapshots(
+            documents,
+            repository.get_case_detail,
+            serialize_document=_serialize,
         )
 
     @app.post("/documents/bulk-reprocess")
@@ -1851,7 +2978,14 @@ def create_app() -> FastAPI:
     @app.get("/documents/{document_id}")
     def get_document(document_id: int) -> dict[str, object] | None:
         document = current_repository().get_document(document_id)
-        return _serialize(document) if document is not None else None
+        if document is None:
+            return None
+        payload = _serialize(document)
+        extraction = build_document_extraction_snapshot_for_document(current_repository(), document_id)
+        if extraction is not None:
+            payload = dict(payload)
+            payload["extraction"] = extraction
+        return payload
 
     @app.get("/documents/{document_id}/activity")
     def list_document_activity(
@@ -1927,6 +3061,56 @@ def create_app() -> FastAPI:
                 offset=offset,
             )
         )
+
+    @app.get("/admin/invoices")
+    def admin_invoices(
+        response: Response,
+        invoice_status: str | None = None,
+        due_before: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
+        repository = current_repository()
+        _set_total_count_header(
+            response,
+            repository.count_invoices(invoice_status=invoice_status, due_before=due_before),
+        )
+        return _serialize(
+            repository.list_invoices(
+                invoice_status=invoice_status,
+                due_before=due_before,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+    @app.get("/admin/missing-submissions")
+    def admin_missing_submissions(
+        response: Response,
+        query: str = "",
+        status: str | None = None,
+        due_before: str | None = None,
+        invoice_status: str | None = None,
+        output_status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        payload = build_missing_submissions_payload(
+            current_repository(),
+            query=query,
+            status=status,
+            due_before=due_before,
+            invoice_status=invoice_status,
+            output_status=output_status,
+            limit=limit,
+            offset=offset,
+        )
+        _set_total_count_header(response, payload["total"])
+        return payload
+
+    @app.get("/admin/demo-pack")
+    def admin_demo_pack() -> dict[str, object]:
+        return build_demo_pack_guide(current_repository(), app.state.settings)
 
     @app.get("/rag/search")
     def search_rag(
@@ -2322,3 +3506,10 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+
+
+
+
+
